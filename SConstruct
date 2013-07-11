@@ -44,7 +44,8 @@ env = Environment()
 env['BISON']    = 'bison'
 env['RE2C']     = 're2c'
 env['CXX']      = 'clang++'
-env['CXXFLAGS'] = ['-std=c++11', '-g', '-Wall']
+env['CXXFLAGS'] = ['-std=c++11', 'stdlib=libc++', '-g', '-Wall']
+env['LINKFLAGS'] = ['-lc++']
 
 if GetOption("build_dir") == "static":
     env['CXXFLAGS']  = ['-std=c++11', '-O3', '-Wall', '-pedantic', '-Werror']
