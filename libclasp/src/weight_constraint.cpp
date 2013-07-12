@@ -30,7 +30,7 @@ struct SharedWeightLits {
 	SharedWeightLits(uint32 size, bool hasWeight) : shared_lits(size, true, hasWeight) {
 		shared_counter = 1; 
 	}
-	std::atomic<int> shared_counter;
+	Clasp::atomic<int> shared_counter;
 	WeightLits       shared_lits;
 };
 

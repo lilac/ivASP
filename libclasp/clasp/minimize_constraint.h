@@ -71,7 +71,7 @@ struct SharedMinimizeData {
 	//! A type for holding an optimum and the information for how to proceed.
 	struct Optimum {
 		typedef std::pair<uint32, wsum_t> Step;
-		typedef std::atomic<uint32>       Atomic;
+		typedef Clasp::atomic<uint32>       Atomic;
 		Atomic seq;     /**< sequence number associated with this optimum */
 		SumVec opt;     /**< current optimum / one value per level      */
 		Step   step;    /**< (opt - step) gives the next bound to check */

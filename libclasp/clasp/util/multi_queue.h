@@ -25,8 +25,8 @@
 
 namespace Clasp { namespace mt { namespace Detail {
 struct NodeBase {
-	typedef std::atomic<NodeBase*> AtomicPtr;
-	typedef std::atomic<int>       AtomicInt;
+	typedef Clasp::atomic<NodeBase*> AtomicPtr;
+	typedef Clasp::atomic<int>       AtomicInt;
 	explicit NodeBase(uint32 rc) { next = 0; refs = rc; }
 	AtomicPtr next;
 	AtomicInt refs;
