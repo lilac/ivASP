@@ -62,26 +62,6 @@ void moveDown(T& t, typename T::size_type from, typename T::size_type to) {
 	shrinkVecTo(t, to);
 }
 
-template <class T>
-struct PodQueue {
-	typedef typename PodVector<T>::type  vec_type;
-	typedef typename vec_type::size_type size_type;
-	PodQueue() : qFront(0) {}
-	bool      empty() const   { return qFront == vec.size(); }
-	size_type size()  const   { return vec.size() - qFront; }
-	const T&  front() const   { return vec[qFront]; }
-	const T&  back()  const   { return vec.back(); }
-	T&        front()         { return vec[qFront]; }
-	T&        back()          { return vec.back(); }
-	void      push(const T& x){ vec.push_back(x);  }
-	void      pop()           { ++qFront; }
-	T         pop_ret()       { return vec[qFront++]; }
-	void      clear()         { vec.clear(); qFront = 0; }
-	void      rewind()        { qFront = 0; }
-	vec_type  vec;    // the underlying vector holding the items
-	size_type qFront; // front position
-};
-
 }
 
 #endif

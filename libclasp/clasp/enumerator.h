@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2010, Benjamin Kaufmann
+// Copyright (c) 2006-2012, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -133,7 +133,10 @@ public:
 	 * Sets the number of solvers sharing this enumerator.
 	 */
 	EnumeratorConstraint* endInit(SharedContext& ctx, uint32 shareCount);
-	
+	//! Force termination of model enumeration in backtrackFromModel().
+	void   terminate()        { fetch_and_or(updates_, uint32(1)); }
+	bool   terminated() const { return (updates_ & 1u) != 0; }
+
 	uint64 enumerated; /**< Number of models enumerated so far. */
 
 	//! Returns the enumeration constraint attached to s.
@@ -199,7 +202,7 @@ public:
 	virtual bool supportsParallel() const{ return true; }
 protected:
 	uint32 getHighestActiveLevel() const { return activeLevel_; }
-	uint32 addUpdateMessage()            { return ++updates_; }
+	uint32 nextUpdate()                  { return (updates_ += 2); }
 	virtual EnumeratorConstraint* doInit(SharedContext& s, uint32 numThreads, bool start) = 0;
 	virtual bool backtrack(Solver& s) = 0;
 	virtual bool updateConstraint(Solver& s, bool disjoint) = 0;
@@ -211,7 +214,7 @@ private:
 	uint64              numModels_;
 	Report*             report_;
 	SharedMinimizeData* mini_;
-	std::atomic<uint32> updates_;
+	Clasp::atomic<uint32> updates_;
 	uint32              activeLevel_;
 	bool                restartOnModel_;
 };

@@ -29,7 +29,6 @@
 #include <clasp/util/left_right_sequence.h>
 #include <clasp/util/misc_types.h>
 #include <clasp/util/atomic.h>
-#include <clasp/solver_strategies.h>
 /*!
  * \file 
  * Contains some types shared between different solvers
@@ -41,76 +40,21 @@ class Assignment;
 class SharedContext;
 class Enumerator;
 class SharedLiterals;
-class SharedDependencyGraph;
-class SolveAlgorithm;
-struct SolveStats;
 
 /*!
  * \addtogroup solver
  */
 //@{
-//! Base class for preprocessors working on clauses only.
+//! Base class for preprocessors working on clauses only
 class SatPreprocessor {
 public:
-	//! A clause class optimized for preprocessing.
-	class Clause {
-	public:
-		static Clause*  newClause(const LitVec& lits);
-		static uint64   abstractLit(Literal p)      { return uint64(1) << ((p.var()-1) & 63);  }
-		uint32          size()                const { return size_;       }
-		const Literal&  operator[](uint32 x)  const { return lits_[x];    }
-		bool            inQ()                 const { return inQ_ != 0;   }
-		uint64          abstraction()         const { return data_.abstr; }
-		Clause*         next()                const { return data_.next;  }
-		bool            marked()              const { return marked_ != 0;}
-		Literal&        operator[](uint32 x)        { return lits_[x];    }    
-		void            setInQ(bool b)              { inQ_    = (uint32)b;}
-		void            setMarked(bool b)           { marked_ = (uint32)b;}
-		uint64&         abstraction()               { return data_.abstr; }
-		Clause*         linkRemoved(Clause* next)   { data_.next = next; return this; }
-		void            strengthen(Literal p);
-		void            simplify(Solver& s);
-		void            destroy();
-	private:
-		Clause(const LitVec& lits);
-		union {
-			uint64  abstr;      // abstraction of literals
-			Clause* next;       // next removed clause
-		}       data_;
-		uint32  size_   : 30; // size of the clause
-		uint32  inQ_    : 1;  // in todo-queue?
-		uint32  marked_ : 1;  // a marker flag
-		Literal lits_[1];     // literals of the clause: [lits_[0], lits_[size_])
-	};
-	
-	SatPreprocessor() : ctx_(0), elimTop_(0) {}
+	SatPreprocessor() : ctx_(0) {}
 	virtual ~SatPreprocessor();
-
-	//! Creates a clone of this preprocessor.
-	/*!
-	 * \note The function does not clone any clauses already added to *this.
-	 */
-	virtual SatPreprocessor* clone() = 0;
-
-	uint32 numClauses() const { return (uint32)clauses_.size(); }
-	//! Adds a clause to the preprocessor.
-	/*!
-	 * \pre clause is not a tautology (i.e. does not contain both l and ~l)
-	 * \pre clause is a set (i.e. does not contain l more than once)
-	 * \return true if clause was added. False if adding the clause makes the problem UNSAT
-	 */
-	bool addClause(const LitVec& cl);
-	//! Runs the preprocessor on all clauses that were previously added.
-	/*!
-	 * \pre A ctx.startAddConstraint() was called and has variables for all added clauses.
-	 */
-	bool preprocess(SharedContext& ctx, bool enumerateModels);
-
-	//! Force removal of state & clauses.
-	void cleanUp();
-
-	//! Extends the model in m with values for any eliminated variables.
-	void extendModel(Assignment& m, LitVec& open);
+	void setContext(SharedContext& ctx) { ctx_ = &ctx; }
+	virtual bool addClause(const LitVec& cl) = 0;
+	virtual bool preprocess(bool enumerateModels) = 0;
+	virtual void extendModel(Assignment& m, LitVec& open) = 0;
+	virtual bool limit(uint32 numCons) const = 0;
 	struct Stats {
 		Stats() : clRemoved(0), clAdded(0), litsRemoved(0) {}
 		uint32 clRemoved;
@@ -118,34 +62,11 @@ public:
 		uint32 litsRemoved;
 	} stats;
 protected:
-	typedef PodVector<Clause*>::type  ClauseList;
 	void reportProgress(const PreprocessEvent& ev);
-	virtual bool  initPreprocess(bool enumerateModels) = 0;
-	virtual bool  doPreprocess() = 0;
-	virtual void  doExtendModel(Assignment& m, LitVec& open) = 0;
-	virtual void  doCleanUp() = 0;
-	Clause*       clause(uint32 clId)       { return clauses_[clId]; }
-	const Clause* clause(uint32 clId) const { return clauses_[clId]; }
-	void          setClause(uint32 clId, const LitVec& cl) {
-		clauses_[clId] = Clause::newClause( cl );
-	}
-	void          destroyClause(uint32 clId){
-		clauses_[clId]->destroy();
-		clauses_[clId] = 0;
-		++stats.clRemoved;
-	}
-	void          eliminateClause(uint32 id){
-		elimTop_     = clauses_[id]->linkRemoved(elimTop_);
-		clauses_[id] = 0;
-		++stats.clRemoved;
-	}
-	SharedContext*  ctx_;     // current context
-	Clause*         elimTop_; // stack of blocked/eliminated clauses
+	SharedContext*  ctx_;
 private:
 	SatPreprocessor(const SatPreprocessor&);
 	SatPreprocessor& operator=(const SatPreprocessor&);
-	ClauseList      clauses_; // initial non-unit clauses
-	LitVec          units_;   // initial unit clauses
 };
 //@}
 
@@ -182,25 +103,39 @@ struct ProblemStats {
 	} 
 };
 
-//! Stores static information about a variable.
-struct VarInfo {
-	enum FLAG {
-		MARK_P = 0x1u, // mark for positive literal
-		MARK_N = 0x2u, // mark for negative literal
-		NANT   = 0x4u, // var in NAnt(P)?
+//! Stores static information about variables.
+class VarInfo {
+public:
+	enum FLAGS {
+		RESERVED_1 = 0x1u, // reserved for future
+		RESERVED_2 = 0x2u, // use
+		NANT   = 0x4u, // if this var is an atom, is it in NAnt(P)
 		PROJECT= 0x8u, // do we project on this var?
 		BODY   = 0x10u,// is this var representing a body?
 		EQ     = 0x20u,// is the var representing both a body and an atom?
-		DISJ   = 0x40u,// in non-hcf disjunction?
+		ELIM   = 0x40u,// is the variable eliminated?
 		FROZEN = 0x80u // is the variable frozen?
 	};
-	VarInfo() : rep(0) {}
-	bool  has(FLAG f)  const { return (rep & flag(f)) != 0; }
-	bool  has(uint32 f)const { return (rep & f) != 0;       }
-	void  set(FLAG f)        { rep |= flag(f); }
-	void  toggle(FLAG f)     { rep ^= flag(f); }
-	static uint8 flag(FLAG x){ return uint8(x); }
-	uint8 rep;
+	VarInfo() {}
+	void  reserve(uint32 maxSize) { info_.reserve(maxSize); }
+	void  add(bool body) {
+		uint8 m = (!body?0:flag(BODY));
+		info_.push_back( m );
+	}
+	bool      empty()                const { return info_.empty(); }
+	uint32    numVars()              const { return (uint32)info_.size(); }
+	bool      isSet(Var v, FLAGS f)  const { return (info_[v] & flag(f)) != 0; }
+	void      toggle(Var v, FLAGS f)       { info_[v] ^= flag(f); }
+	void      clear() { info_.clear(); }
+private:
+	// Bit:   7     6   5   4    3    2   1     0
+	//      frozen elim eq body proj nant reserved
+	typedef PodVector<uint8>::type InfoVec;
+	static uint8 flag(FLAGS x) { return uint8(x); }
+	
+	VarInfo(const VarInfo&);
+	VarInfo& operator=(const VarInfo&);
+	InfoVec info_;
 };
 
 //! A class for efficiently storing and propagating binary and ternary clauses.
@@ -231,7 +166,7 @@ public:
 	/*!
 	 * \pre s.isTrue(p)
 	 */
-	void removeTrue(const Solver& s, Literal p);
+	void removeTrue(Solver& s, Literal p);
 	
 	//! Propagates consequences of p following from binary and ternary clauses.
 	/*!
@@ -350,32 +285,30 @@ private:
  * symbol table, as well as the binary and ternary 
  * implication graph of the input problem.
  * 
- * Furthermore, a SharedContext object always stores a distinguished
+ * Furthermore, a SharedContext object stores a distinguished
  * master solver that is used to store and simplify problem constraints.
- * Additional solvers can be added via SharedContext::addSolver().
- * Once initialization is completed, any additional solvers must be attached
- * to this object by calling SharedContext::attach().
+ *
+ * Once initialization is completed, other solvers s can 
+ * attach to this object by calling ctx->attach(s).
  */
 class SharedContext {
 public:
-	typedef SharedDependencyGraph SDG;
-	typedef PodVector<Solver*>::type       SolverVec;
 	typedef std::auto_ptr<SatPreprocessor> SatPrepro;
-	typedef SingleOwnerPtr<SDG>            SccGraph;
-	typedef Configuration*                 ConfigPtr;
-	typedef std::auto_ptr<Distributor>     DistrPtr;
 	typedef ProblemStats                   Stats;
 	typedef LitVec::size_type              size_type;
 	typedef ShortImplicationsGraph         BTIG;
-	typedef ContextOptions                 Opts;
-	typedef SolveAlgorithm                 Algorithm;
-	enum InitMode   { init_share_symbols };
+	typedef Distributor*                   DistrPtr;
+	
+	enum InitMode        { init_share_symbols };
+	enum PhysicalSharing { share_no   = 0, share_problem = 1, share_learnt = 2, share_all = 3 };
+	enum UpdateMode      { update_propagate = 0, update_conflict = 1 };
+
 	/*!
-	 * \name Configuration
+	 * \name configuration
 	 */
 	//@{
 	//! Creates a new object for sharing variables and the binary and ternary implication graph.
-	explicit SharedContext(const ContextOptions& opts = ContextOptions());
+	SharedContext(PhysicalSharing x = share_no, bool learnImp = true);
 	//! Creates a new object that shares its symbol table with rhs.
 	SharedContext(const SharedContext& rhs,  InitMode m);
 	~SharedContext();
@@ -384,52 +317,52 @@ public:
 	//! Resets this object to the state after default construction.
 	void       reset();
 	//! Sets maximal number of solvers sharing this object.
-	void       concurrency(uint32 numSolver);
-	//! Adds an additional solver to this object and returns it.
-	Solver&    addSolver();
-	bool       hasSolver(uint32 id) const { return id < solvers_.size(); }
-	//! Configures the statistic object of attached solvers.
+	void       setSolvers(uint32 numSolver);
+	//! Configures physical sharing of (explicit) constraints.
 	/*!
-	 * The level determines the amount of extra statistics.
-	 * Currently two levels are supported:
-	 *  - Level 1 enables ExtendedStats
-	 *  - Level 2 enables ExtendedStats and JumpStats
-	 * \see ExtendedStats
-	 * \see JumpStats
-   */
-	void       enableStats(uint32 level);
-	//! Sets the configuration for this object and its attached solvers.
-	/*!
-	 * \note If own is true, ownership of c is transferred.
+	 * If x is share_no, explicit constraints are not shared but copied.
+	 * If x is share_problem, only problem constraints are shared while learnt constraints are copied.
+	 * If x is share_learnt, learnt constraints are shared while problem constraints are copied.
+	 * If x is share_all, all constraints are shared.
 	 */
-	void       setConfiguration(Configuration* c, bool own);
-	
-	SatPrepro  satPrepro;  /*!< Preprocessor for simplifying problem.                  */
-	DistrPtr   distributor;/*!< Distributor object to use for distribution of learnt constraints. */
-	SccGraph   sccGraph;   /*!< Program dependency graph - only used for ASP-problems. */
-	Algorithm* solve;      /*!< Active solve algorithm. */
-	
-	//! Returns the master solver associated with this object.
-	Solver*    master()                        const { return solver(0);    }	
-	//! Returns the solver with the given id.
-	Solver*    solver(uint32 id)               const { return solvers_[id]; }
-	uint32     concurrency()                   const { return share_.count; }
-	bool       frozen()                        const { return share_.frozen;}
-	bool       isShared()                      const { return frozen() && concurrency() > 1; }
-	bool       physicalShare(ConstraintType t) const { return (opts_.shareMode & (1 + (t != Constraint_t::static_constraint))) != 0; }
-	bool       physicalShareProblem()          const { return (opts_.shareMode & ContextOptions::share_problem) != 0; }
-	bool       distribution()                  const { return opts_.distMask != 0; }
-	bool       allowImplicit(ConstraintType t) const { return t != Constraint_t::static_constraint ? opts_.shortMode != Opts::short_explicit : !isShared(); }
-	//! Returns the current configuration used in this object.
+	void       physicalSharing(PhysicalSharing x)   { share_.physical = x; }
+	//! Enables/disables learning of small clauses via ShortImplicationsGraph.
+	void       learnImplicit(bool b)                { share_.impl = (uint32)b; }
+	//! Set mt update mode.
+	void       updateMode(UpdateMode x)             { share_.update = x;       }
+	//! Sets the global distribution strategey to use.
 	/*!
-	 * If no configuration was set, a default configuration is used.
-	 * \see DefaultConfiguration
+	 * \note The caller also has to set a distributor in order to enable
+	 *       distribution of learnt constraints.
 	 */
-	ConfigPtr  configuration()                 const { return config_.get(); }
+	void       setDistribution(uint32 maxSize, uint32 maxLbd, uint32 types) {
+		share_.distSize = maxSize;
+		share_.distLbd  = maxLbd;
+		share_.distMask = types;
+	}
+	//! Sets the distributor object to use for distribution of learnt constraints.
+	/*!
+	 * If this function is not called or d is 0, (explicit) learnt constraints are
+	 * never distributed to other solvers. Otherwise,
+	 * distribution is controlled by the global distribution strategy.
+	 * \see setDistribution(uint32 maxSize, uint32 maxLbd, uint32 types)
+	 */
+	void       setDistributor(DistrPtr d) { distributor_.reset(d); }
+	DistrPtr   releaseDistributor()       { return distributor_.release(); }
+	
+	
+	uint32     numSolvers() const { return share_.count; }
+	bool       frozen()     const { return share_.frozen; }
+	bool       isShared()   const { return frozen() && numSolvers() > 1; }
+	UpdateMode updateMode() const { return UpdateMode(share_.update); }
+	bool       physicalShare(ConstraintType t) const{ return (share_.physical & (1 + (t != Constraint_t::static_constraint))) != 0; }
+	bool       physicalShareProblem()          const{ return (share_.physical & share_problem) != 0; }
+	bool       distribution()                  const{ return share_.distMask != 0; }
+	bool       allowImplicit(ConstraintType t) const{ return t != Constraint_t::static_constraint ? share_.impl != 0 : !isShared(); }
 	//@}
 	
 	/*!
-	 * \name Problem specification
+	 * \name problem specification
 	 * Functions for adding a problem to the master solver.
 	 * Problem specification is a four-stage process:
 	 * -# Add variables to the SharedContext object.
@@ -454,10 +387,6 @@ public:
 	 * for varGuess avoids repeated regrowing of the state data structures.
 	 */
 	void    reserveVars(uint32 varGuess);
-	//! Copies vars and symbol table from other.
-	void    copyVars(SharedContext& other);
-	//! Removes all vars [startVar, numVars()].
-	void    popVars(uint32 startVar) { varInfo_.resize(std::max(Var(1), startVar)); problem_.vars = numVars(); }
 
 	//! Adds a new variable of type t.
 	/*!
@@ -473,19 +402,14 @@ public:
 	//! Freezes/defreezes a variable (a frozen var is exempt from SatELite preprocessing).
 	void    setFrozen(Var v, bool b);
 	//! Adds v to resp. removes v from the set of projection variables.
-	void    setProject(Var v, bool b)    { assert(validVar(v)); if (b != varInfo_[v].has(VarInfo::PROJECT)) varInfo_[v].toggle(VarInfo::PROJECT); }
+	void    setProject(Var v, bool b)    { assert(validVar(v)); if (b != varInfo_.isSet(v, VarInfo::PROJECT)) varInfo_.toggle(v, VarInfo::PROJECT); }
 	//! Marks/unmarks v as contained in a negative loop or head of a choice rule.
-	void    setNant(Var v, bool b)       { assert(validVar(v)); if (b != varInfo_[v].has(VarInfo::NANT))    varInfo_[v].toggle(VarInfo::NANT);    }
-	//! Mark/unmark v as contained in a non-hcf disjunction.
-	void    setInDisj(Var v, bool b)     { assert(validVar(v)); if (b != varInfo_[v].has(VarInfo::DISJ))    varInfo_[v].toggle(VarInfo::DISJ);    }
+	void    setNant(Var v, bool b)       { assert(validVar(v)); if (b != varInfo_.isSet(v, VarInfo::NANT))    varInfo_.toggle(v, VarInfo::NANT);    }
 	//! Eliminates the variable v.
 	/*!
 	 * \pre v must not occur in any constraint and frozen(v) == false and value(v) == value_free
 	 */
 	void    eliminate(Var v);
-	void    setVarEq(Var v, bool b)      { assert(validVar(v)); if (b != varInfo_[v].has(VarInfo::EQ))      varInfo_[v].toggle(VarInfo::EQ);      }
-	void    mark(Literal p)              { assert(validVar(p.var())); varInfo_[p.var()].rep |= (VarInfo::MARK_P + p.sign()); }
-	void    unmark(Var v)                { assert(validVar(v)); varInfo_[v].rep &= ~(VarInfo::MARK_P|VarInfo::MARK_N); }
 	
 	//! Requests a special tag literal for tagging conditional knowledge.
 	/*!
@@ -510,7 +434,7 @@ public:
 	 * for (Var i = 1; i <= numVars(); ++i) {...}
 	 * \endcode
 	 */
-	uint32  numVars()          const { return static_cast<uint32>(varInfo_.size() - 1); }
+	uint32  numVars()          const { return varInfo_.numVars() - 1; }
 	//! Returns the number of eliminated vars.
 	uint32  numEliminatedVars()const { return problem_.vars_eliminated; }
 	
@@ -527,22 +451,19 @@ public:
 	 */
 	VarType type(Var v)        const {
 		assert(validVar(v));
-		return varInfo_[v].has(VarInfo::EQ)
+		return varInfo_.isSet(v, VarInfo::EQ)
 			? Var_t::atom_body_var
-			: VarType(Var_t::atom_var + varInfo_[v].has(VarInfo::BODY));
+			: VarType(Var_t::atom_var + varInfo_.isSet(v, VarInfo::BODY));
 	}
 	//! Returns true if v is currently eliminated, i.e. no longer part of the problem.
-	bool    eliminated(Var v)  const;
+	bool    eliminated(Var v)  const { assert(validVar(v)); return varInfo_.isSet(v, VarInfo::ELIM); }
 	//! Returns true if v is excluded from variable elimination.
-	bool    frozen(Var v)      const { assert(validVar(v)); return varInfo_[v].has(VarInfo::FROZEN); }
+	bool    frozen(Var v)      const { assert(validVar(v)); return varInfo_.isSet(v, VarInfo::FROZEN); }
 	//! Returns true if v is a projection variable.
-	bool    project(Var v)     const { assert(validVar(v)); return varInfo_[v].has(VarInfo::PROJECT);}
+	bool    project(Var v)     const { assert(validVar(v)); return varInfo_.isSet(v, VarInfo::PROJECT);}
 	//! Returns true if v is contained in a negative loop or head of a choice rule.
-	bool    nant(Var v)        const { assert(validVar(v)); return varInfo_[v].has(VarInfo::NANT);}
-	bool    inDisj(Var v)      const { assert(validVar(v)); return varInfo_[v].has(VarInfo::DISJ);}
+	bool    nant(Var v)        const { assert(validVar(v)); return varInfo_.isSet(v, VarInfo::NANT);}
 	Literal tagLiteral()       const { return tag_; }
-	bool    marked(Literal p)  const { assert(validVar(p.var())); return varInfo_[p.var()].has(VarInfo::MARK_P + p.sign()); }
-	VarInfo info(Var v)        const { assert(validVar(v)); return varInfo_[v]; }
 	//! Returns the preferred decision literal of variable v w.r.t its type.
 	/*!
 	 * \return 
@@ -553,7 +474,7 @@ public:
 	 */
 	Literal preferredLiteralByType(Var v) const {
 		assert(validVar(v));
-		return Literal(v, !varInfo_[v].has(VarInfo::BODY));
+		return Literal(v, !varInfo_.isSet(v, VarInfo::BODY));
 	}
 	
 	//! Prepares master solver so that constraints can be added.
@@ -579,33 +500,30 @@ public:
 	bool    addBinary(Literal p, Literal q, bool learnt = false)             { return btig_.addBinary(p, q, learnt); }
 	//! Same as shortImplications->addTernary(p, q, learnt).
 	bool    addTernary(Literal p, Literal q, Literal r, bool learnt = false) { return btig_.addTernary(p, q, r, learnt); }
-  
+	
 	//! Finishes initialization of the master solver.
 	/*!
 	 * The function must be called once before search is started. After endInit()
-	 * was called, previously added solvers can be attached to the 
+	 * was called, numSolvers()-1 other solvers can be attached to the 
 	 * shared context and learnt constraints may be added to solver.
-	 * \param attachAll If true, also calls attach() for all solvers that were added to this object.
 	 * \return If the constraints are initially conflicting, false. Otherwise, true.
 	 * \note
 	 * The master solver can't recover from top-level conflicts, i.e. if endInit()
 	 * returned false, the solver is in an unusable state.
 	 * \post frozen()
 	 */
-	bool    endInit(bool attachAll = false);
+	bool    endInit();
 	
-	//! Attaches the solver with the given id to this object.
+	//! Attaches s to this object.
 	/*!
+	 * \pre other is not already attached to some other shared context.
 	 * \note It is safe to attach multiple solvers concurrently
 	 * but the master solver shall not change during the whole
 	 * operation.
-	 *
-	 * \pre id < concurrency()
 	 */
-	bool    attach(uint32 id) { return attach(*solver(id)); }
-	bool    attach(Solver& s);
-
-	//! Detaches the solver with the given id from this object.
+	bool    attach(Solver& other);
+	
+	//! Detaches s from this object.
 	/*!
 	 * The function removes any tentative constraints from s.
 	 * Shall be called once after search has stopped.
@@ -613,9 +531,8 @@ public:
 	 *       i.e. in a parallel search different solvers may call detach()
 	 *       concurrently.
 	 */
-	void    detach(uint32 id, bool reset = false) { return detach(*solver(id), reset); }
-	void    detach(Solver& s, bool reset = false);
-	
+	void    detach(Solver& s);
+
 	//! Returns the number of problem constraints.
 	uint32      numConstraints()    const;
 	//! Estimates the problem complexity.
@@ -630,7 +547,7 @@ public:
 	//@}
 
 	/*!
-	 * \name Learning and distribution
+	 * \name learning
 	 * Functions for distributing knowledge.
 	 * 
 	 * \note The functions in this group can be safely called 
@@ -640,23 +557,22 @@ public:
 	//! Distributes the clause in lits via the distributor.
 	/*!
 	 * The function first calls the distribution strategy 
-	 * to decides whether the clause is a valid candidate for distribution.
-	 * If so and a distributor was set, it distributes the clause and returns a handle to the
+	 * to decides whether the clause is a good candidate for distribution.
+	 * If so, it distributes the clause and returns a handle to the
 	 * now shared literals of the clause. Otherwise, it returns 0.
 	 *
 	 * \param owner The solver that created the clause.
 	 * \param lits  The literals of the clause.
-	 * \param size  The number of literals in the clause.
-	 * \param extra Additional information about the clause.
+	 * \param size  The number of literals in the clause
+	 * \param extra Additional information about the clause
 	 * \note 
 	 *   If the return value is not null, it is the caller's 
 	 *   responsibility to release the returned handle (i.e. by calling release()).
-	 * \see ContextOptions::setDistribution(uint32 maxSize, uint32 maxLbd, uint32 types)
 	 */
 	SharedLiterals* distribute(const Solver& owner, const Literal* lits, uint32 size, const ClauseInfo& extra) const;
 	//! Tries to receive at most maxOut clauses.
 	/*!
-	 * The function queries the distributor object for new clauses to be delivered to
+	 * The function queries the distribution object for new clauses to be delivered to
 	 * the solver target. Clauses are stored in out.
 	 * \return The number of clauses received.
 	 */
@@ -665,58 +581,59 @@ public:
 	uint32          numLearntShort() const { return btig_.numLearnt(); }
 
 	//@}
+	//! Returns the master solver associated with this object.
+	Solver*      master()    const   { return master_; }	
 	const Stats& stats()     const   { return problem_; }
 	uint32       winner()    const   { return share_.winner; }
+	void         setWinner(uint32 x) { share_.winner = std::min(x, numSolvers()); }
 	uint32       numBinary() const   { return btig_.numBinary();  }
 	uint32       numTernary()const   { return btig_.numTernary(); }
 	SymbolTable& symTab()    const   { return symTabPtr_->symTab; }
-	const Opts&  options()   const   { return opts_; } 
-	const BTIG&  shortImplications()                       const { return btig_; }
-	uint32       numShortImplications(Literal p)           const { return btig_.numEdges(p); }	
+	BTIG&        shortImplications() { return btig_; }
+	const BTIG&  shortImplications() const { return btig_; }
+	uint32       numShortImplications(Literal p) const { return btig_.numEdges(p); }	
 	void         reportProgress(const PreprocessEvent& ev) const { if (progress_) progress_->reportProgress(ev);  }
 	void         reportProgress(const SolveEvent& ev)      const { if (progress_) progress_->reportProgress(ev);  }
 	void         setProblemSize(uint32 sz, uint32 estimate) {
 		problem_.size      = sz;
 		problem_.complexity= estimate;
 	}
-	SolveStats*  accuStats(bool accu) const;
-	void         accuStats(const SolveStats& s) const;
-	void         setWinner(uint32 x) { share_.winner = std::min(x, concurrency()); }
-	Opts&        options()           { return opts_; }
-	void         simplify(const Solver& s, Literal p) {
-		if (!isShared()) { btig_.removeTrue(s, p); }
-	}	
+	SatPrepro    satPrepro;  // preprocessor
 private:
 	SharedContext(const SharedContext&);
 	SharedContext& operator=(const SharedContext&);
-	void init(Configuration* c);
-	typedef std::auto_ptr<Enumerator>     EnumPtr;
-	typedef ProgressReport*               LogPtr;
-	typedef SingleOwnerPtr<Configuration> Config;
-	typedef PodVector<VarInfo>::type      VarVec;
+	typedef std::auto_ptr<Distributor> DistPtr;
+	typedef std::auto_ptr<Enumerator>  EnumPtr;
+	typedef ProgressReport*            LogPtr;
 	struct SharedSymTab {
 		SharedSymTab() : refs(1) {}
 		SymbolTable symTab;
 		uint32      refs;
-	}*           symTabPtr_;     // pointer to shared symbol table
-	ProblemStats   problem_;     // problem statistics
-	VarVec         varInfo_;     // varInfo[v] stores info about variable v
-	BTIG           btig_;        // binary-/ternary implication graph
-	Config         config_;      // active configuration
-	SolverVec      solvers_;     // solvers associated with this context
-	SolveStats*    accu_;        // accumulator of solving statistics
-	LogPtr         progress_;    // report interface or 0 if not used
-	EnumPtr        enumerator_;  // enumerator object
-	Literal        tag_;         // literal for tagging learnt constraints
-	size_type      lastInit_;    // size of master's db after last init
-	size_type      lastTopLevel_;// size of master's top-level after last init
-	ContextOptions opts_;        // options for this object
-	struct Share {               // Additional data
-		uint32 count   :15;        //   max number of objects sharing this object
-		uint32 winner  :15;        //   id of solver that terminated the search
-		uint32 frozen  : 1;        //   is adding of problem constraints allowed?
-		Share() : count(1), winner(0), frozen(0) {}
-	}              share_;
+	}*           symTabPtr_;   // pointer to shared symbol table
+	ProblemStats problem_;     // problem statistics
+	VarInfo      varInfo_;     // varInfo[v] stores info about variable v
+	BTIG         btig_;        // binary-/ternary implication graph
+	Solver*      master_;      // master solver, responsible for init
+	LogPtr       progress_;    // report interface or 0 if not used
+	EnumPtr      enumerator_;  // enumerator object
+	DistPtr      distributor_; // object for distributing learnt knowledge
+	Literal      tag_;         // literal for tagging learnt constraints
+	size_type    lastInit_;    // size of master's db after last init
+	size_type    lastTopLevel_;// size of master's top-level after last init
+	struct Share {             // Share-Flags
+		uint32 count   :14;      //   max number of objects sharing this object
+		uint32 winner  :14;      //   id of solver that terminated the search
+		uint32 physical: 2;      //   mode of physical sharing 
+		uint32 impl    : 1;      //   allow update of BTIG after endInit()?
+		uint32 frozen  : 1;      //   is adding of problem constraints allowed?
+		uint32 distSize: 20;     //   distribute constraints up to this size only
+		uint32 distLbd : 8;      //   distribute constraints up to this lbd only
+		uint32 distMask: 3;      //   distribute constraints of this type only
+		uint32 update  : 1;      //   process update messages on propagation or after conflict
+		bool   distribute(uint32 size, uint32 lbd, uint32 type) const {
+			return size <= distSize && lbd <= distLbd && ((type & distMask) != 0);
+		}
+	}            share_;
 };
 
 //@}

@@ -104,52 +104,37 @@ bool WeightConstraint::newWeightConstraint(SharedContext& ctx, Literal con, Weig
 			bound      = (bound+(w-1))/w;
 			sumW       = (sumW+(w-1))/w;
 		}
+		if (bound == 1) { // clause
+			assert(s.isTrue(con));
+			ClauseCreator clause(&s); clause.reserve(lits.size());
+			clause.start();
+			for (i = 0; i != lits.size(); ++i) { clause.add(lits[i].first); }
+			return clause.end();
+		}
 	}
-	if (bound != sumW && bound > 1) {
-		bool   hasW = lits.front().second != lits.back().second;
-		uint32 size = (uint32)lits.size()+1;
-		uint32 nb   = sizeof(WeightConstraint) + (size+hasW)*sizeof(UndoInfo);
-		void*  m    = 0;
-		WL*    sL   = 0;
-		if (!ctx.physicalShareProblem()) {
-			nb        = ((nb + 3) / 4)*4;
-			uint32 ls = sizeof(WL) + (size << uint32(hasW))*sizeof(Literal);
-			m         = ::operator new (nb + ls);
-			sL        = new (reinterpret_cast<unsigned char*>(m)+nb) WL(size, false, hasW);
-		}
-		else {
-			m         = ::operator new(nb);
-			void* t   = ::operator new(sizeof(mt::SharedWeightLits) + (size << uint32(hasW))*sizeof(Literal));
-			sL        = &(new (t) mt::SharedWeightLits(size, hasW))->shared_lits;
-		}
-		assert(m && (reinterpret_cast<uintp>(m) & 7u) == 0);
-		Constraint* c = new (m) WeightConstraint(ctx, con, lits, bound, sumW, sL);
-		if (out) *out = c;
-		ctx.add(c);
+	bool   hasW = lits.front().second != lits.back().second;
+	uint32 size = (uint32)lits.size()+1;
+	uint32 nb   = sizeof(WeightConstraint) + (size+hasW)*sizeof(UndoInfo);
+	void*  m    = 0;
+	WL*    sL   = 0;
+	if (!ctx.physicalShareProblem()) {
+		nb        = ((nb + 3) / 4)*4;
+		uint32 ls = sizeof(WL) + (size << uint32(hasW))*sizeof(Literal);
+		m         = ::operator new (nb + ls);
+		sL        = new (reinterpret_cast<unsigned char*>(m)+nb) WL(size, false, hasW);
 	}
 	else {
-		ClauseCreator clause(&s), imp(&s);
-		clause.reserve(lits.size()); imp.reserve(2u);
-		clause.start();
-		if (bound == 1) { // CON == disjunction
-			clause.add(~con);
-			for (LitVec::size_type i = 0; i != lits.size(); ++i) { 
-				clause.add(lits[i].first);
-				if (!imp.start().add(con).add(~lits[i].first).end()) { return false; }
-			}	
-		}
-		else { // CON == conjunction
-			clause.add(con);
-			for (LitVec::size_type i = 0; i != lits.size(); ++i) { 
-				clause.add(~lits[i].first);
-				if (!imp.start().add(~con).add(lits[i].first).end()) { return false; }
-			}	
-		}
-		clause.end();
+		m         = ::operator new(nb);
+		void* t   = ::operator new(sizeof(mt::SharedWeightLits) + (size << uint32(hasW))*sizeof(Literal));
+		sL        = &(new (t) mt::SharedWeightLits(size, hasW))->shared_lits;
 	}
+	assert(m && (reinterpret_cast<uintp>(m) & 7u) == 0);
+	Constraint* c = new (m) WeightConstraint(ctx, con, lits, bound, sumW, sL);
+	if (out) *out = c;
+	ctx.add(c);
 	return !s.hasConflict();
 }
-	
+
 // removes assigned and merges duplicate/complementary literals
 // return: achievable weight
 // post  : lits is sorted by decreasing weights

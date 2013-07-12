@@ -20,7 +20,6 @@
 #include <clasp/enumerator.h>
 #include <clasp/minimize_constraint.h>
 #include <clasp/solver.h>
-#include <clasp/solve_algorithms.h>
 namespace Clasp { 
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -115,14 +114,13 @@ Enumerator::Result Enumerator::backtrackFromModel(Solver& s, bool callContinue) 
 	activeLevel_            = mini_ ? constraint(s)->minimize()->commitCurrent(s)+1 : s.decisionLevel();
 	Enumerator::Result    r = Enumerator::enumerate_continue;
 	EnumeratorConstraint* c = constraint(s);
-	SolveAlgorithm* solve   = s.sharedContext()->solve;
 	do {
 		++enumerated;
 		s.stats.addModel(s.decisionLevel());
 		if (report_) { 
 			report_->reportModel(s, *this); 
 		}
-		if ((numModels_ != 0 && --numModels_ == 0) || (solve && solve->terminated())) {
+		if ((numModels_ != 0 && --numModels_ == 0) || terminated()) {
 			// enough models enumerated
 			return enumerate_stop_enough;
 		}
@@ -139,7 +137,7 @@ Enumerator::Result Enumerator::backtrackFromModel(Solver& s, bool callContinue) 
 		// enumerator is not trivial w.r.t current search scheme
 		// force update of other solvers
 		// - this one is up to date
-		c->setUpdates(addUpdateMessage());
+		c->setUpdates(nextUpdate());
 	}
 	if (callContinue && !continueFromModel(s)) {
 		r = enumerate_stop_complete;

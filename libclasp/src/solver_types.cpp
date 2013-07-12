@@ -23,15 +23,12 @@ namespace Clasp {
 /////////////////////////////////////////////////////////////////////////////////////////
 // SolveStats
 /////////////////////////////////////////////////////////////////////////////////////////
+void SolveStats::enableStats(uint32 level) {
+	if (level > 1 && !jumps)  { jumps  = new JumpStats();   }
+}
 void SolveStats::enableStats(const SolveStats& o) {
-	if (o.extra) { enableExtended(); }
-	if (o.jumps) { enableJump(); }
-}
-void SolveStats::enableExtended() { 
-	if (!extra) { extra = new ExtendedStats(); }
-}
-void SolveStats::enableJump() {
-	if (!jumps) { jumps = new JumpStats(); }
+	if (o.jumps    && !jumps)   { jumps   = new JumpStats(); }
+	if (o.parallel && !parallel){ parallel= new ParallelStats(); }
 }
 void SolveStats::enableQueue(uint32 size) { 
 	if (queue && queue->maxSize()!=size) { queue->destroy(); queue = 0; }
@@ -39,19 +36,19 @@ void SolveStats::enableQueue(uint32 size) {
 }
 void SolveStats::reset() {
 	CoreStats::reset();
-	if (queue) queue->resetGlobal();
-	if (extra) extra->reset();
-	if (jumps) jumps->reset();
+	if (queue)   queue->reset();
+	if (jumps)   jumps->reset();
+	if (parallel)parallel->reset();
 }
 void SolveStats::accu(const SolveStats& o) {
 	CoreStats::accu(o);
-	if (extra && o.extra) extra->accu(*o.extra);
-	if (jumps && o.jumps) jumps->accu(*o.jumps);
+	if (jumps    && o.jumps)    jumps->accu(*o.jumps);
+	if (parallel && o.parallel) parallel->accu(*o.parallel);
 }
 void SolveStats::swapStats(SolveStats& o) {
 	std::swap(static_cast<CoreStats&>(*this), static_cast<CoreStats&>(o));
-	std::swap(extra, o.extra);
 	std::swap(jumps, o.jumps);
+	std::swap(parallel, o.parallel);
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClauseHead
@@ -95,11 +92,13 @@ bool ClauseHead::toImplication(Solver& s) {
 	bool   locked     = ClauseHead::locked(s) && s.decisionLevel() > 0;
 	if ((locked || !implicit || tagged()) && sz > 1) { return false; }
 	// transform to implication but keep statistics
-	ExtendedStats* x  = s.stats.extra;
-	s.stats.extra     = 0;
+	uint32 i          = t-learnt();
+	uint32 bin        = s.stats.binary,     tern = s.stats.ternary;
+	uint64 learnt     = s.stats.learnts[i], lits = s.stats.lits[i];
 	if (sz > 1) { s.addShort(head_,sz, ClauseInfo(t).setLbd(2)); }
 	else        { s.addUnary(head_[0], t); }
-	s.stats.extra     = x;
+	s.stats.binary    = bin;    s.stats.ternary  = tern;
+	s.stats.learnts[i]= learnt; s.stats.lits[i]  = lits;
 	detach(s);
 	return true;
 }

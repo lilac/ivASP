@@ -20,19 +20,21 @@
 #include <clasp/solve_algorithms.h>
 #include <clasp/solver.h>
 #include <clasp/enumerator.h>
+#include <clasp/lookahead.h>
 #include <clasp/util/timer.h>
 #include <cmath>
 namespace Clasp { 
 ProgressReport::ProgressReport()  {}
 ProgressReport::~ProgressReport() {}
 /////////////////////////////////////////////////////////////////////////////////////////
-// SolveParams
+// SolveParams & SolverConfig
 /////////////////////////////////////////////////////////////////////////////////////////
 SolveParams::SolveParams() 
-	: randProb(0.0f) {
+	: randFreq_(0.0) {
 }
-ContextOptions::ContextOptions() {
-	std::memset(this, 0, sizeof(ContextOptions));
+void SolverConfig::initFrom(const SolverConfig& other) {
+	solver->strategies() = other.solver->strategies();
+	params               = other.params;
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 // RestartParams
@@ -40,24 +42,6 @@ ContextOptions::ContextOptions() {
 void RestartParams::disable() {
 	sched         = ScheduleStrategy::none();
 	std::memset(&counterRestart, 0, sizeof(uint64));
-}
-uint32 SumQueue::restart(uint32 maxLBD, float limMax) {
-	++nRestart;
-	if (upCfl >= upForce) {
-		double avg = upCfl / double(nRestart);
-		double gLbd= globalAvgLbd();
-		bool   sx  = samples >= upForce;
-		upCfl      = 0;
-		nRestart   = 0;
-		if      (avg >= 16000.0) { lim += 0.1f;  upForce = 16000; }
-		else if (sx)             { lim += 0.05f; upForce = std::max(uint32(16000), upForce-10000); }
-		else if (avg >= 4000.0)  { lim += 0.05f; }
-		else if (avg >= 1000.0)  { upForce += 10000u; }
-		else if (lim > limMax)   { lim -= 0.05f; }
-		if ((gLbd > maxLBD)==lbd){ dynamicRestarts(limMax, !lbd); }
-	}
-	resetQueue();
-	return upForce;
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 // ReduceParams
@@ -76,16 +60,6 @@ void ReduceParams::disable() {
 	fGrow     = 0.0f; fInit = 0.0f; fMax = 0.0f;
 	initRange = Range<uint32>(UINT32_MAX, UINT32_MAX); 
 	maxRange  = UINT32_MAX;
-}
-/////////////////////////////////////////////////////////////////////////////////////////
-// InitParams
-/////////////////////////////////////////////////////////////////////////////////////////
-bool InitParams::randomize(Solver& s) const {
-	for (uint32 i = 0, j = randConf; i != randRuns && j; ++i) {
-		if (s.search(j, UINT32_MAX, false, 1.0) != value_free) { return !s.hasConflict(); }
-		s.undoUntil(0);
-	}
-	return true;
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 // Schedule
@@ -126,11 +100,11 @@ uint64 ScheduleStrategy::next() {
 // solve
 /////////////////////////////////////////////////////////////////////////////////////////
 bool solve(SharedContext& ctx, const SolveParams& p, const SolveLimits& lim) {
-	return SolveAlgorithm(lim).solve(ctx, p, LitVec());
+	return SimpleSolve(lim).solve(ctx, p, LitVec());
 }
 
 bool solve(SharedContext& ctx, const SolveParams& p, const LitVec& assumptions, const SolveLimits& lim) {
-	return SolveAlgorithm(lim).solve(ctx, p, assumptions);
+	return SimpleSolve(lim).solve(ctx, p, assumptions);
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 // SolveAlgorithm
@@ -143,33 +117,61 @@ bool SolveAlgorithm::backtrackFromModel(Solver& s) {
 	return s.sharedContext()->enumerator()->backtrackFromModel(s) == Enumerator::enumerate_continue;
 }
 
-bool SolveAlgorithm::beginSolve(SharedContext& ctx, Solver& s) { 
-	return ctx.attach(s);
-}
-bool SolveAlgorithm::endSolve(SharedContext& ctx, Solver& s, bool more) {
+bool SolveAlgorithm::solve(SharedContext& ctx, const SolveParams& p, const LitVec& assume) {
+	assumptions_ = assume;
+	if (!isSentinel(ctx.tagLiteral())) { assumptions_.push_back(ctx.tagLiteral()); }
+	bool more = limits_.conflicts == 0 || doSolve(*ctx.master(), p);
 	ctx.enumerator()->reportResult(!more);
-	ctx.detach(s);
+	if (!isSentinel(ctx.tagLiteral())) { assumptions_.pop_back(); }
+	ctx.detach(*ctx.master());
 	return more;
 }
-bool SolveAlgorithm::solve(SharedContext& ctx, const SolveParams& p, const LitVec& assume) { return solve(ctx, *ctx.master(), p, assume); }
-bool SolveAlgorithm::solve(SharedContext& ctx, Solver& s, const SolveParams& p, const LitVec& assume) {
-	if (!beginSolve(ctx, s)) { return false; }
-	LitVec temp;
-	if (!isSentinel(ctx.tagLiteral())) {
-		temp.reserve(assume.size() + 1);
-		temp.push_back(ctx.tagLiteral());
-		temp.insert(temp.end(), assume.begin(), assume.end());
+bool SolveAlgorithm::initPath(Solver& s, const LitVec& path, InitParams& params) {
+	assert(!s.hasConflict() && s.decisionLevel() == 0);
+	SingleOwnerPtr<Lookahead> look(0);
+	if (params.lookType != Lookahead::no_lookahead && params.lookOps != 0) {
+		look = new Lookahead(static_cast<Lookahead::Type>(params.lookType));
+		look->init(s);
+		s.addPost(look.release());
+		--params.lookOps;
 	}
-	bool more = limits_.conflicts == 0 || doSolve(s, p, temp.empty() ? assume : temp);
-	return endSolve(ctx, s, more);
+	bool ok = s.propagate() && s.simplify();
+	if (look.get()) { 
+		s.removePost(look.get());
+		look = look.get(); // restore ownership
+	}
+	if (!ok) { return false; }
+	// setup path
+	for (LitVec::size_type i = 0, end = path.size(); i != end; ++i) {
+		Literal p = path[i];
+		if (s.value(p.var()) == value_free) {
+			s.assume(p); --s.stats.choices;
+			// increase root level - assumption can't be undone during search
+			s.pushRootLevel();
+			if (!s.propagate())  return false;
+		}
+		else if (s.isFalse(p)) return false;
+	}
+	// do random probings if any
+	if (uint32 i = params.randRuns) {
+		params.randRuns = 0;
+		do {
+			if (s.search(params.randConf, UINT32_MAX, false, 1.0) != value_free) { return !s.hasConflict(); }
+			s.undoUntil(0);
+		} while (--i);
+	}
+	// do initial lookahead choices if requested
+	if (uint32 i = params.lookOps) {
+		params.lookOps = 0;
+		assert(look.get());
+		RestrictedUnit::decorate(s, i, look.release());
+	}
+	return true;
 }
 
-
-ValueRep solvePath(SolveAlgorithm* st, Solver& s, const SolveParams& p, bool init, SolveLimits& lim) {
-	if (lim.reached()) { return value_free;  }
-	if (s.hasConflict() || (init && !p.init.randomize(s))) {
-		return value_false;
-	}
+ValueRep SolveAlgorithm::solvePath(Solver& s, const SolveParams& p, SolveLimits& lim) {
+	if (s.hasConflict()) return value_false;
+	if (lim.reached())   return value_free;
 	struct  ConflictLimits {
 		uint64 restart; // current restart limit
 		uint64 reduce;  // current reduce limit
@@ -187,7 +189,9 @@ ValueRep solvePath(SolveAlgorithm* st, Solver& s, const SolveParams& p, bool ini
 	ScheduleStrategy rs = p.restart.sched;
 	Solver::DBInfo   db = {0,0,0};
 	ValueRep result     = value_free;
-	uint64 nRestart     = 0;
+	uint64 lastC        = s.stats.conflicts;
+	uint64 lastR        = s.stats.restarts;
+	uint64 nextUp       = 16000;
 	s.stats.cflLast     = s.stats.analyzed;
 	uint32 shuffle      = p.restart.shuffle;
 	RangeD dbSizeLimit  = !dg.disabled() || dg.defaulted() 
@@ -211,13 +215,13 @@ ValueRep solvePath(SolveAlgorithm* st, Solver& s, const SolveParams& p, bool ini
 	cLimit.global       = lim.conflicts;
 	cLimit.restart      = UINT64_MAX;
 	uint64& rsLimit     = p.restart.local() ? sLimit.local : cLimit.restart;
+	uint64 nRestart     = 0;
 	rsLimit             = rs.current();
 	if (p.restart.dynamic()) {
 		s.stats.enableQueue(rs.base);
-		s.stats.queue->resetGlobal();
-		s.stats.queue->dynamicRestarts((float)rs.grow, true);
-		sLimit.dynamic = s.stats.queue;
-		rsLimit        = sLimit.dynamic->upForce;
+		s.stats.queue->reset();
+		sLimit.xLbd = (float)rs.grow;
+		rsLimit     = nextUp;
 	}
 	EventType progress(s, SolvePathEvent::event_restart, 0, 0);
 	while (result == value_free && cLimit.global) {
@@ -227,10 +231,10 @@ ValueRep solvePath(SolveAlgorithm* st, Solver& s, const SolveParams& p, bool ini
 		progress.cLimit = std::min(minLimit, sLimit.local);
 		progress.lLimit = sLimit.learnts;
 		if (progress.evType) { s.sharedContext()->reportProgress(progress); }
-		result     = s.search(sLimit, p.randProb);
+		result     = s.search(sLimit, p.randomProbability());
 		minLimit   = (minLimit - sLimit.conflicts); // number of actual conflicts
 		cLimit.update(minLimit);
-		if (result == value_true && st && st->backtrackFromModel(s)) {
+		if (result == value_true && backtrackFromModel(s)) {
 			result   = value_free; // continue enumeration
 			if (p.restart.resetOnModel()) {
 				rs.reset();
@@ -249,18 +253,39 @@ ValueRep solvePath(SolveAlgorithm* st, Solver& s, const SolveParams& p, bool ini
 		else if (result == value_free){  // limit reached
 			minLimit        = 0;
 			progress.evType = SolvePathEvent::event_none;
-			if (rsLimit == 0 || sLimit.hasDynamicRestart()) {
+			if (rsLimit == 0 || sLimit.dynamicRestart(s.stats)) {
 				// restart reached - do restart
-				++nRestart;
+				++s.stats.restarts; ++nRestart;
 				if (p.restart.counterRestart && (nRestart % p.restart.counterRestart) == 0 ) {
 					inDegree.clear();
 					s.heuristic()->bump(s, inDegree, p.restart.counterBump / (double)s.inDegree(inDegree));
 				}
-				if (sLimit.dynamic) {
-					minLimit = sLimit.dynamic->samples;
-					rsLimit  = sLimit.dynamic->restart(rs.len ? rs.len : UINT32_MAX, (float)rs.grow);
+				if (p.restart.dynamic()) {
+					uint64 num = s.stats.restarts  - lastR;
+					uint64 cfl = s.stats.conflicts - lastC;
+					if (cfl   >=  nextUp) {
+						float& lim = sLimit.xLbd != 0.0f ? sLimit.xLbd : sLimit.xCfl;
+						double avg = cfl / double(num);
+						bool   sx  = (s.stats.analyzed - s.stats.cflLast) >= nextUp;
+						bool   tog = rs.len != 0 && (s.stats.avgLbd() > rs.len) == (lim == sLimit.xLbd);
+						lastR      = s.stats.restarts;
+						lastC      = s.stats.conflicts;
+						if      (avg >= 16000.0) { lim += 0.1f;  nextUp = 16000; }
+						else if (sx)             { lim += 0.05f; nextUp = std::max(uint64(16000), nextUp-10000); }
+						else if (avg >= 4000.0)  { lim += 0.05f; }
+						else if (avg >= 1000.0)  { nextUp += 10000u; }
+						else if (lim > rs.grow)  { lim -= 0.05f; }
+						if (tog) {
+							lim    = (float)rs.grow;
+							nextUp = 16000;
+							std::swap(sLimit.xLbd, sLimit.xCfl);
+						}
+					}
+					rsLimit  = nextUp;;
+					minLimit = s.stats.queue->samples;
+					s.stats.queue->reset();
 				}
-				s.restart();
+				s.undoUntil(0);
 				if (rsLimit == 0)              { rsLimit = rs.next(); }
 				if (!minLimit)                 { minLimit= rs.current(); }
 				if (p.reduce.strategy.fRestart){ db      = s.reduceLearnts(p.reduce.fRestart(), p.reduce.strategy); }
@@ -294,37 +319,32 @@ ValueRep solvePath(SolveAlgorithm* st, Solver& s, const SolveParams& p, bool ini
 	if (lim.restarts  != UINT64_MAX) { lim.restarts -= nRestart;   }
 	return result;
 }
-
-bool SolveAlgorithm::doSolve(Solver& s, const SolveParams& p, const LitVec& path) {
-	Enumerator* ctrl = s.sharedContext()->enumerator();
-	SolveLimits lim  = getSolveLimits();
-	uint32 root      = s.rootLevel();
-	bool   complete  = true;
+/////////////////////////////////////////////////////////////////////////////////////////
+// SimpleSolve
+/////////////////////////////////////////////////////////////////////////////////////////
+bool SimpleSolve::terminate() { return false; }
+bool SimpleSolve::doSolve(Solver& s, const SolveParams& p) {
+	s.stats.reset();
+	Enumerator*  enumerator = s.sharedContext()->enumerator();
+	bool hasWork    = true, complete = true;
+	InitParams  init= p.init;
+	SolveLimits lim = getSolveLimits();
 	Timer<RealTime> tt; tt.start();
 	s.sharedContext()->reportProgress(SolveStateEvent(s, "algorithm"));
-	s.sharedContext()->accuStats(s.stats);
-	s.stats.reset();
-	for (bool hasWork= true; hasWork; ) {
+	// Remove any existing assumptions and restore solver to a usable state.
+	// If this fails, the problem is unsat, even under no assumptions.
+	while (s.clearAssumptions() && hasWork) {
 		// Add assumptions - if this fails, the problem is unsat 
 		// under the current assumptions but not necessarily unsat.
-		if (s.pushRoot(path)) {
-			complete = (solvePath(this, s, p, s.stats.choices == 0, lim) != value_free && s.decisionLevel() == s.rootLevel());
+		if (initPath(s, getInitialPath(), init)) {
+			complete = (solvePath(s, p, lim) != value_free && s.decisionLevel() == s.rootLevel());
 		}
 		// finished current work item
-		hasWork    = complete && ctrl->optimizeNext();
-		if (!s.popRootLevel(s.rootLevel() - root) || !s.propagate() || !s.simplify()) {
-			hasWork  = false;
-		}
+		hasWork    = complete && enumerator->optimizeNext();
 	}
 	setSolveLimits(lim);
 	tt.stop();
 	s.sharedContext()->reportProgress(SolveStateEvent(s, "algorithm", tt.total()));
 	return !complete;
-}
-
-bool SolveAlgorithm::satisfiable(SharedContext&, Solver& s, const SolveParams& p, const LitVec& path) {
-	SolveLimits x;
-	bool init   = s.stats.choices == 0 && p.init.randRuns;
-	return s.clearAssumptions() && s.pushRoot(path) && solvePath(0, s, p, init, x) == value_true;
 }
 }

@@ -285,12 +285,12 @@ inline compose_2_2<OP1, OP2,OP3> compose22(const OP1& op1, const OP2& op2, const
 	return compose_2_2<OP1, OP2, OP3>(op1, op2, op3);
 }
 
+
 template <class T, class D = DeleteObject>
 class SingleOwnerPtr {
 public:
-	         SingleOwnerPtr()       : ptr_(0) {}
 	explicit SingleOwnerPtr(T* ptr) : ptr_( set_bit(uintp(ptr),0) ) {}
-	~SingleOwnerPtr()       { *this = 0; }
+	~SingleOwnerPtr()                 { *this = 0; }
 	bool is_owner()   const { return test_bit(ptr_, 0); }
 	T*   get()        const { return (T*)clear_bit(ptr_, 0); }
 	T&   operator*()  const { return *get(); }
@@ -309,17 +309,6 @@ private:
 	uintp ptr_;
 };
 
-template <class T>
-struct Range {
-	Range(T x, T y) : lo(x), hi(y) { if (x > y)  { hi = x;  lo = y; } }
-	T clamp(T val) const { 
-		if (val < lo) return lo;
-		if (val > hi) return hi;
-		return val;
-	}
-	T lo;
-	T hi;
-};
 
 //@}
 }

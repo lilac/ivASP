@@ -156,8 +156,7 @@ private:
 	Literal(uint32 rep) : rep_(rep) {}
 	uint32 rep_;
 };
-inline Literal operator^(Literal lhs, bool sign) { return Literal::fromIndex( lhs.index() ^ uint32(sign) ); }
-inline Literal operator^(bool sign, Literal rhs) { return rhs ^ sign; }
+
 /////////////////////////////////////////////////////////////////////////////////////////
 // Common interface
 /////////////////////////////////////////////////////////////////////////////////////////

@@ -30,7 +30,9 @@
 
 namespace Clasp { namespace SatElite {
 
-//! SatElite preprocessor for clauses
+class Clause; // Special clause class optimized for use with the preprocessor
+
+//! SatElite preprocessor for clauses.
 /*!
  * The preprocessor implements subsumption, self-subsumption, variable elimination,
  * and (optionally) blocked clause elimination.
@@ -43,10 +45,17 @@ namespace Clasp { namespace SatElite {
  */
 class SatElite : public Clasp::SatPreprocessor {
 public:
-	SatElite();
+	explicit SatElite(SharedContext* ctx = 0);
 	~SatElite();
-	Clasp::SatPreprocessor* clone();
-	//! Options used by the preprocessor.
+
+	//! Adds a clause to the preprocessor.
+	/*!
+	 * \pre clause is not a tautology (i.e. does not contain both l and ~l)
+	 * \pre clause is a set (i.e. does not contain l more than once)
+	 * \return true if clause was added. False if adding the clause makes the problem UNSAT
+	 */
+	bool addClause(const LitVec& clause);
+	//! Options used by the preprocessor
 	struct Options {
 		Options() : maxIters(UINT32_MAX), maxOcc(UINT32_MAX), maxTime(UINT32_MAX), maxFrozen(UINT32_MAX), bce(1), maxClause(4000000), elimPure(1) {}
 		uint32  maxIters; /**< maximal number of iterations                         */
@@ -65,12 +74,10 @@ public:
 		uint32    cur;
 		uint32    max;
 	};
+	bool preprocess(bool enumModels);
+	void extendModel( Assignment& m, LitVec& unconstr );
 	bool limit(uint32 numCons) const { return numCons > options.maxClause; }
-protected:
-	bool  initPreprocess(bool enumModels);
-	bool  doPreprocess();
-	void  doExtendModel(Assignment& m, LitVec& open);
-	void  doCleanUp();
+	typedef PodVector<Clause*>::type  ClauseList;
 private:
 	typedef PodVector<uint8>::type    TouchedList;
 	typedef bk_lib::left_right_sequence<Literal, Var,0> ClWList;
@@ -126,7 +133,7 @@ private:
 	typedef bk_lib::indexed_priority_queue<LessOccCost> ElimHeap;
 	Clause*         peekSubQueue() const {
 		assert(qFront_ < queue_.size());
-		return (Clause*)clause( queue_[qFront_] );
+		return clauses_[ queue_[qFront_] ];
 	}
 	inline Clause*  popSubQueue();
 	inline void     addToSubQueue(uint32 clauseId);
@@ -161,9 +168,12 @@ private:
 		return (occurs_[v].pos > options.maxOcc && occurs_[v].neg > options.maxOcc)
 			||   (occurs_[v].cost() == 0 && options.elimPure == 0);
 	}
+	void    cleanUp();
 	bool    timeout() const { return time(0) > timeout_; }
 	OccurList*    occurs_;    // occur list for each variable
+	Clause*       elimTop_;   // stack of blocked/eliminated clauses
 	ElimHeap      elimHeap_;  // candidates for variable elimination; ordered by increasing occurrence-cost
+	ClauseList    clauses_;   // all clauses
 	VarVec      posT_, negT_; // temporary clause lists used in eliminateVar
 	ClauseList    resCands_;  // pairs of clauses to be resolved
 	LitVec        resolvent_; // temporary, used in addResolvent

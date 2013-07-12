@@ -42,6 +42,7 @@ ConstraintType LearntConstraint::type() const { return Constraint_t::learnt_conf
 /////////////////////////////////////////////////////////////////////////////////////////
 PostPropagator::PostPropagator() : next(0)           {}
 PostPropagator::~PostPropagator()                    {}
+uint32 PostPropagator::priority() const              { return uint32(priority_single); }
 bool PostPropagator::init(Solver&)                   { return true; }
 void PostPropagator::reset()                         {}
 bool PostPropagator::isModel(Solver&)                { return true; }

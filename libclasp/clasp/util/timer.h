@@ -31,9 +31,11 @@ struct ProcessTime {
 	static double getTime();
 };
 
+#if WITH_THREADS
 struct ThreadTime {
 	static double getTime();
 };
+#endif
 
 struct RealTime {
 	static double getTime();

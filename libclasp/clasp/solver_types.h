@@ -28,7 +28,7 @@
 #include <clasp/util/left_right_sequence.h>
 #include <clasp/util/misc_types.h>
 #include <clasp/util/type_manip.h>
-#include <numeric>
+
 /*!
  * \file 
  * Contains some types used by a Solver
@@ -44,102 +44,51 @@ class SharedLiterals;
 ///////////////////////////////////////////////////////////////////////////////
 // Statistics
 ///////////////////////////////////////////////////////////////////////////////
-inline double ratio(uint64 x, uint64 y) {
-	if (!x || !y) return 0.0;
-	return static_cast<double>(x) / static_cast<double>(y);
-}
-inline double percent(uint64 x, uint64 y) {	return ratio(x, y) * 100.0; }
-
-//! A struct for holding core statistics used by a solver.
-/*!
- * Core statistics are always present in a solver and hence
- * can be used by heuristics.
- */
+//! A struct for holding core solving statistics used by a solver.
 struct CoreStats {
 	CoreStats() { reset(); }
-	void reset() { std::memset(this, 0, sizeof(CoreStats)); }
+	void reset(){ std::memset(this, 0, sizeof(*this)); }
 	void accu(const CoreStats& o) {
-		uint64*        x = reinterpret_cast<uint64*>(this);
-		const uint64* ox = reinterpret_cast<const uint64*>(&o);
-		const uint64* oe = &o.cflLast;
-		while (ox != oe) { *x++ += *ox++; }
-		cflLast          = std::max(cflLast, o.cflLast);
+		const uint64* rhs = &o.choices;
+		      uint64* lhs = &choices;
+		while (rhs != &o.cflLast) { *lhs++ += *rhs++; }
+		cflLast = std::max(o.cflLast, cflLast);
+		lhs     = learnts; rhs = o.learnts;
+		while (rhs <= &o.deleted) { *lhs++ += *rhs++; }
+		binary += o.binary;
+		ternary+= o.ternary;
 	}
-	uint64 backtracks() const { return conflicts-analyzed; }
-	uint64 backjumps()  const { return analyzed; }
-	double avgRestart() const { return ratio(analyzed, restarts); }
-	uint64 choices;   /**< Number of choices performed. */
-	uint64 conflicts; /**< Number of conflicts found. */
-	uint64 analyzed;  /**< Number of number of analyzed conflicts. */
-	uint64 restarts;  /**< Number of restarts. */ 
-	uint64 cflLast;   /**< Number of conflicts since last restart. */
-};
-
-//! A struct for holding (optional) extra statistics.
-struct ExtendedStats {
-	typedef ConstraintType type_t;
-	ExtendedStats() { reset(); }
-	void reset() { std::memset(this, 0, sizeof(ExtendedStats)); }
-	void accu(const ExtendedStats& o) {
-		uint64*        x = reinterpret_cast<uint64*>(this);
-		const uint64* ox = reinterpret_cast<const uint64*>(&o);
-		const uint64* oe = reinterpret_cast<const uint64*>(o.lits + Constraint_t::max_value);
-		while (ox != oe) { *x++ += *ox++; }
-		binary   += o.binary;
-		ternary  += o.ternary;
-		cpuTime  += o.cpuTime;
-		intImps  += o.intImps;
-		intJumps += o.intJumps;
-		gpLits   += o.gpLits;
-		gps      += o.gps;
-		splits   += o.splits;
-	}
-	void addLearnt(uint32 size, type_t t) {
+	void addLearnt(uint32 size, ConstraintType t) {
 		assert(t != Constraint_t::static_constraint && t <= Constraint_t::max_value);
 		learnts[t-1]+= 1;
 		lits[t-1]   += size;
 		binary      += (size == 2);
 		ternary     += (size == 3);
 	}
-	uint64 sumLemmas()     const { return std::accumulate(learnts, learnts+Constraint_t::max_value, uint64(0)); }
-	uint64 num(type_t t)   const { return learnts[t-1]; }
-	double avgLen(type_t t)const { return ratio(lits[t-1], num(t)); }
-	double avgModel()      const { return ratio(modLits, models);    }
-	double distRatio()     const { return ratio(distributed, learnts[0] + learnts[1]);  }
-	double avgDistLbd()    const { return ratio(sumDistLbd, distributed); }
-	double avgIntJump()    const { return ratio(intJumps, intImps); }
-	double avgGp()         const { return ratio(gpLits, gps); }
-	double intRatio()      const { return ratio(integrated, distributed); }
-	// CL1
-	uint64 models;     /**< Number of models found in one solver.   */
-	uint64 modLits;    /**< Sum of decision literals in models.     */
-	uint64 numTests;   /**< Number of stability tests (only in DLP).*/
-	uint64 numPartial; /**< Number of partial stability tests.      */
-	uint64 deleted;    /**< Sum of learnt nogoods removed.          */
-	uint64 distributed;/**< Number of nogoods distributed.          */
-	uint64 sumDistLbd; /**< Sum of lbds of distributed nogoods.     */
-	uint64 integrated; /**< Number of nogoods integrated            */
-	// CL2
+	double avgLbd() const { return sumLbd / (double)analyzed; }
+	double avgCfl() const { return sumCfl / (double)analyzed; }
+	uint64 choices;   /**< Number of choices performed. */
+	uint64 conflicts; /**< Number of conflicts found. */
+	uint64 analyzed;  /**< Number of backjumps (i.e. number of analyzed conflicts). */
+	uint64 restarts;  /**< Number of restarts. */ 
+	uint64 models;    /**< Number of models found. */
+	uint64 sumCfl;    /**< Sum of conflict levels. */
+	uint64 sumLbd;    /**< Sum of lbds.            */
+	uint64 cflLast;   /**< Number of conflicts since last restart. */
+	// CL2 - Learnt stats
 	typedef uint64 Array[Constraint_t::max_value];
-	Array  learnts;    /**< learnts[t-1]: Number of learnt nogoods of type t.  */
-	Array  lits;       /**< lits[t-1]   : Sum of literals in nogoods of type t.*/
-	uint32 binary;     /**< Number of learnt binary nogoods.                   */
-	uint32 ternary;    /**< Number of learnt ternary nogoods.                  */
-	double cpuTime;    /**< (Estimated) cpu time of the current solver.        */
-	// CL3
-	uint64 intImps;    /**< Number of initial implications from integrated nogoods.*/
-	uint64 intJumps;   /**< Sum of backjumps needed to integrate new implications. */
-	uint64 gpLits;     /**< Sum of literals in received guiding paths.             */
-	uint32 gps;        /**< Number of guiding paths received.                      */
-	uint32 splits;     /**< Number of split requests handled.                      */
+	Array  learnts;   /**< learnts[t-1]: Number of learnt nogoods of type t.  */
+	Array  lits;      /**< lits[t-1]   : Sum of literals in nogoods of type t.*/
+	uint64 deleted;   /**< Sum of learnt nogoods removed. */
+	uint32 binary;    /**< Number of learnt binary nogoods. */
+	uint32 ternary;   /**< Number of learnt ternary nogoods.*/
 };
-
-//! A struct for holding (optional) jump statistics.
+//! A struct for jump statistics.
 struct JumpStats {
 	JumpStats() { reset(); }
 	void reset(){ std::memset(this, 0, sizeof(*this)); }
 	void accu(const JumpStats& o) {
-		jumps   += o.jumps;
+		modLits += o.modLits;
 		bJumps  += o.bJumps;
 		jumpSum += o.jumpSum;
 		boundSum+= o.boundSum;
@@ -147,8 +96,7 @@ struct JumpStats {
 		maxJumpEx= std::max(o.maxJumpEx, maxJumpEx);
 		maxBound = std::max(o.maxBound, maxBound);
 	}
-	void update(uint32 dl, uint32 uipLevel, uint32 bLevel) {
-		++jumps;
+	void    update(uint32 dl, uint32 uipLevel, uint32 bLevel) {
 		jumpSum += dl - uipLevel; 
 		maxJump = std::max(maxJump, dl - uipLevel);
 		if (uipLevel < bLevel) {
@@ -159,18 +107,50 @@ struct JumpStats {
 		}
 		else { maxJumpEx = maxJump; }
 	}
-	uint64 jumped()     const { return jumpSum - boundSum; }
-	double jumpedRatio()const { return ratio(jumped(), jumpSum); }
-	double avgBound()   const { return ratio(boundSum, bJumps); }
-	double avgJump()    const { return ratio(jumpSum, jumps); }
-	double avgJumpEx()  const { return ratio(jumped(), jumps); }
-	uint64 jumps;    /**< Number of jumps performed.                                            */
-	uint64 bJumps;   /**< Number of backjumps that were bounded.                                */
-	uint64 jumpSum;  /**< Number of levels that could be skipped w.r.t first-uip.               */
-	uint64 boundSum; /**< Number of levels that could not be skipped because of backtrack-level.*/
-	uint32 maxJump;  /**< Longest possible backjump.                                            */
-	uint32 maxJumpEx;/**< Longest executed backjump (< maxJump if longest jump was bounded).    */
-	uint32 maxBound; /**< Max difference between uip- and backtrack-level.                      */
+	uint64  modLits;  /**< Sum of decision literals in models. */
+	uint64  bJumps;   /**< Number of backjumps that were bounded. */
+	uint64  jumpSum;  /**< Number of levels that could be skipped w.r.t first-uip. */
+	uint64  boundSum; /**< Number of levels that could not be skipped because of backtrack-level.*/
+	uint32  maxJump;  /**< Longest possible backjump. */
+	uint32  maxJumpEx;/**< Longest executed backjump (< maxJump if longest jump was bounded). */
+	uint32  maxBound; /**< Max difference between uip- and backtrack-level. */
+};
+//! A struct for aggregating statistics relevant for parallel solving.
+/*!
+ * Always associated with one solver (thread).
+ */
+struct ParallelStats {
+	ParallelStats() { reset(); }
+	double  cpuTime;    /**< (Estimated) cpu time of the current solver. */
+	uint64  distributed;/**< Number of nogoods distributed. */
+	uint64  integrated; /**< Number of nogoods integrated   */
+	uint64  sumLbd;     /**< Sum of lbds of shared nogoods. */
+	uint64  imps;       /**< Number of initial implications from shared. */
+	uint64  jumps;      /**< Sum of backjumps needed to integrate new implications. */
+	uint64  gpLits;     /**< Sum of literals in received guiding paths. */
+	uint32  gps;        /**< Number of guiding paths received. */
+	uint32  splits;     /**< Number of split requests handled. */
+	void    reset() { 
+		std::memset(this, 0, sizeof(*this)); 
+		cpuTime = 0.0;
+	}
+	void    accu(const ParallelStats& o) {
+		cpuTime     += o.cpuTime;
+		// dist stats
+		distributed += o.distributed;
+		integrated  += o.integrated;
+		sumLbd      += o.sumLbd;
+		imps        += o.imps;
+		jumps       += o.jumps;
+		// gp stats
+		gpLits      += o.gpLits;
+		splits      += o.splits;
+		gps         += o.gps;
+	}
+	void newGP(LitVec::size_type length) {
+		++gps;
+		gpLits += length;
+	}
 };
 
 struct QueueImpl {
@@ -193,16 +173,8 @@ struct SumQueue {
 		void* m = ::operator new(sizeof(SumQueue) + (size*sizeof(uint32)));
 		return new (m) SumQueue(size);
 	}
-	void dynamicRestarts(float x, bool xLbd) {
-		upForce  = 16000;
-		upCfl    = 0;
-		nRestart = 0;
-		lim      = x;
-		lbd      = xLbd;
-	}
-	void destroy()         { this->~SumQueue(); ::operator delete(this); }
-	void resetQueue()      { sumLbd = sumCfl = samples = 0; queue.clear(); }
-	void resetGlobal()     { globalSumLbd = globalSumCfl = globalSamples = 0; resetQueue(); }
+	void destroy() { this->~SumQueue(); ::operator delete(this); }
+	void reset()   { sumLbd = sumCfl = samples = 0; queue.clear(); }
 	void update(uint32 dl, uint32 lbd) {
 		if (samples++ >= queue.maxSize) {
 			uint32 y = queue.top(); 
@@ -212,95 +184,69 @@ struct SumQueue {
 		}
 		sumLbd += lbd;
 		sumCfl += dl;
-		++upCfl;
-		++globalSamples;
-		globalSumLbd += lbd;
-		globalSumCfl += dl;
 		queue.push((dl << 7) + lbd);
 	}
 	double  avgLbd() const { return sumLbd / (double)queue.maxSize; }
 	double  avgCfl() const { return sumCfl / (double)queue.maxSize; }
 	uint32  maxSize()const { return queue.maxSize; }
 	bool    full()   const { return queue.full();  }
-	double  globalAvgLbd() const { return ratio(globalSumLbd, globalSamples); }
-	double  globalAvgCfl() const { return ratio(globalSumCfl, globalSamples); } 
-	bool    isRestart()    const { return full() && (lbd ? (avgLbd()*lim) > globalAvgLbd() : (avgCfl() * lim) > globalAvgCfl()); }
-	uint32  restart(uint32 maxLBD, float xLim);
-
-	uint64    globalSumLbd; /**< Sum of lbds since last call to resetGlobal().           */
-	uint64    globalSumCfl; /**< Sum of conflict levels since last call to resetGlobal().*/
-	uint64    globalSamples;/**< Samples since last call to resetGlobal().               */
-	uint32    sumLbd;       /**< Sum of lbds in queue.            */
-	uint32    sumCfl;       /**< Sum of conflict levels in queue. */
-	uint32    samples;      /**< Number of items in queue.        */
-	// ------- Dynamic restarts -------
-	uint32    upForce;      /**< Number of conflicts before an update is forced.*/
-	uint32    upCfl;        /**< Conflicts since last update.                   */
-	uint32    nRestart;     /**< Restarts since last update.                    */
-	float     lim;          /**< LBD/CFL adjustment factor for dynamic restarts (0=disable). */
-	bool      lbd;          /**< Dynamic restarts based on true=lbd or false=confllict level.*/
-	// --------------------------------
-	QueueImpl queue;
-private: 
-	SumQueue(uint32 size) 
-		: globalSumLbd(0), globalSumCfl(0), globalSamples(0), sumLbd(0), sumCfl(0), samples(0)
-		, upForce(16000), upCfl(0), nRestart(0), lim(0.0f), lbd(true)
-		, queue(size) {
-	}
-	SumQueue(const SumQueue&);
-	SumQueue& operator=(const SumQueue&);
+	uint32     sumLbd;
+	uint32     sumCfl;
+	uint32     samples;
+	QueueImpl  queue;
+private: SumQueue(uint32 size) : sumLbd(0), sumCfl(0), samples(0), queue(size) {}
+private: SumQueue(const SumQueue&);
+private: SumQueue& operator=(const SumQueue&);
 };
-
-//! A struct for aggregating statistics maintained in a solver object.
+//! A struct for aggregating statistics of one solve operation.
 struct SolveStats : public CoreStats {
-	SolveStats() : queue(0), extra(0), jumps(0) {}
-	SolveStats(const SolveStats& o) : CoreStats(o), queue(0), extra(0), jumps(0) {
-		if (o.queue) enableQueue(o.queue->maxSize());
-		enableStats(o);
+	SolveStats() : queue(0), jumps(0), parallel(0) {}
+	SolveStats(const SolveStats& o) : CoreStats(o), queue(0), jumps(0), parallel(0) {
+		if (o.queue)    enableQueue(o.queue->maxSize());
+		if (o.jumps)    jumps    = new JumpStats(*o.jumps); 
+		if (o.parallel) parallel = new ParallelStats(*o.parallel);
 	}
-	~SolveStats() { delete jumps; delete extra; if (queue) queue->destroy(); }
+	~SolveStats() { delete parallel; delete jumps; if (queue) queue->destroy(); }
+	void enableParallelStats() { if (!parallel)parallel = new ParallelStats(); }
+	void enableStats(uint32 level);
 	void enableStats(const SolveStats& other);
-	void enableExtended();
-	void enableJump();
 	void enableQueue(uint32 size);
 	void reset();
 	void accu(const SolveStats& o);
 	void swapStats(SolveStats& o);
-	inline void addLearnt(uint32 size, ConstraintType t);
 	inline void updateJumps(uint32 dl, uint32 uipLevel, uint32 bLevel, uint32 lbd);
-	inline void addDeleted(uint32 num);
 	inline void addDistributed(uint32 lbd, ConstraintType t);
-	inline void addTest(bool partial);
-	inline void addModel(uint32 decisionLevel);
-	inline void addCpuTime(double t);
-	inline void addSplit(uint32 num = 1);
 	inline void addIntegratedAsserting(uint32 receivedDL, uint32 jumpDL);
 	inline void addIntegrated(uint32 num = 1);
 	inline void removeIntegrated(uint32 num = 1);
-	inline void addPath(const LitVec::size_type& sz);
-	SumQueue*      queue; /**< Optional queue for running averages. */
-	ExtendedStats* extra; /**< Optional extended statistics.        */
-	JumpStats*     jumps; /**< Optional jump statistics.            */
+	inline void addDeleted(uint32 num);
+	inline void addModel(uint32 decisionLevel);
+	SumQueue*      queue;    /**< Optional queue for running averages. */
+	JumpStats*     jumps;    /**< Optional jump statistics. */
+	ParallelStats* parallel; /**< Optional parallel statistics. */
 private: SolveStats& operator=(const SolveStats&);
 };
-inline void SolveStats::addLearnt(uint32 size, ConstraintType t)  { if (extra) { extra->addLearnt(size, t); } }
-inline void SolveStats::addDeleted(uint32 num)                    { if (extra) { extra->deleted += num; }  }
-inline void SolveStats::addDistributed(uint32 lbd, ConstraintType){ if (extra) { ++extra->distributed; extra->sumDistLbd += lbd; } }
-inline void SolveStats::addIntegrated(uint32 n)                   { if (extra) { extra->integrated += n;} }
-inline void SolveStats::removeIntegrated(uint32 n)                { if (extra) { extra->integrated -= n;} }
-inline void SolveStats::addCpuTime(double t)                      { if (extra) { extra->cpuTime += t; }    }
-inline void SolveStats::addSplit(uint32 num)                      { if (extra) { extra->splits += num; }  }
-inline void SolveStats::addPath(const LitVec::size_type& sz)      { if (extra) { ++extra->gps; extra->gpLits += sz; } }
-inline void SolveStats::addTest(bool partial)                     { if (extra) { ++extra->numTests; extra->numPartial += (uint32)partial; } }
-inline void SolveStats::addModel(uint32 DL)                       { if (extra) { ++extra->models; extra->modLits += DL; } }
-inline void SolveStats::addIntegratedAsserting(uint32 rDL, uint32 jDL) {
-	if (extra) { ++extra->intImps; extra->intJumps += (rDL - jDL); }
-}
+inline void SolveStats::addDeleted(uint32 num)                    { deleted += num; }
+inline void SolveStats::addDistributed(uint32 lbd, ConstraintType){ if (parallel) { ++parallel->distributed; parallel->sumLbd += lbd; } }
 inline void SolveStats::updateJumps(uint32 dl, uint32 uipLevel, uint32 bLevel, uint32 lbd) {
 	++analyzed;
+	sumCfl += dl;
+	sumLbd += lbd;
 	if (queue) { queue->update(dl, lbd); }
 	if (jumps) { jumps->update(dl, uipLevel, bLevel); }
 }
+inline void SolveStats::addIntegratedAsserting(uint32 rDL, uint32 jDL) {
+	if (parallel) { ++parallel->imps; parallel->jumps += (rDL - jDL); }
+}
+inline void SolveStats::addIntegrated(uint32 n)   { if (parallel) { parallel->integrated += n;} }
+inline void SolveStats::removeIntegrated(uint32 n){ if (parallel) { parallel->integrated -= n;} }
+inline void SolveStats::addModel(uint32 DL) {
+	++models;
+	if (jumps)    { jumps->modLits += DL;}
+}
+///////////////////////////////////////////////////////////////////////////////
+
+
 ///////////////////////////////////////////////////////////////////////////////
 // Clauses
 ///////////////////////////////////////////////////////////////////////////////
@@ -547,28 +493,6 @@ struct ReasonStore64 : PodVector<Antecedent>::type {
 	};
 };
 
-//! A set of configurable values for a variable.
-/*!
- * Beside its currently assigned value, a variable
- * can also have a user, saved, preferred, and default value.
- * These values are used in sign selection to determine the signed literal 
- * of a variable to be assign first.
- * During sign selection, the values form a hierarchy:
- * user > saved > preferred > current sign score of heuristic > default value
- */
-struct ValueSet {
-	ValueSet() : rep(0) {}
-	enum Value { user_value = 0x03u, saved_value = 0x0Cu, pref_value = 0x30u, def_value = 0xC0u };
-	bool     sign()       const { return (right_most_bit(rep) & 0xAAu) != 0; }
-	bool     empty()      const { return rep == 0; }
-	bool     has(Value v) const { return (rep & v) != 0; }
-	bool     has(uint32 f)const { return (rep & f) != 0; }
-	ValueRep get(Value v) const { return static_cast<ValueRep>((rep & v) / right_most_bit(v)); }
-	void     set(Value which, ValueRep to) { rep &= ~which; rep |= (to * right_most_bit(which)); }
-	void     save(ValueRep x)   { rep &= ~saved_value; rep |= (x << 2); }
-	uint8 rep;
-};
-
 //! Stores assignment related information.
 /*!
  * For each variable v, the class stores 
@@ -583,15 +507,15 @@ struct ValueSet {
 class Assignment  {
 public:
 	typedef PodVector<uint32>::type     AssignVec;
-	typedef PodVector<ValueSet>::type   PrefVec;
+	typedef PodVector<uint8>::type      PhaseVec;
 	typedef bk_lib::detail::if_then_else<
 		sizeof(Constraint*)==sizeof(uint64)
 		, ReasonStore64
 		, ReasonStore32>::type            ReasonVec;
 	typedef ReasonVec::value_type       ReasonWithData;
-	Assignment() : front(0), elims_(0), units_(0) { }
+	Assignment() : front(0), eliminated_(0) { }
 	LitVec            trail;   // assignment sequence
-	LitVec::size_type front;   // and "propagation queue"
+	LitVec::size_type front;   // "propagation queue"
 	bool              qEmpty() const { return front == trail.size(); }
 	uint32            qSize()  const { return (uint32)trail.size() - front; }
 	Literal           qPop()         { return trail[front++]; }
@@ -602,17 +526,17 @@ public:
 	//! Number of assigned variables.
 	uint32            assigned()   const { return (uint32)trail.size();   }
 	//! Number of free variables.
-	uint32            free()       const { return numVars() - (assigned()+elims_);   }
+	uint32            free()       const { return numVars() - (assigned()+eliminated_);   }
 	//! Returns the largest possible decision level.
-	uint32            maxLevel()   const { return (1u<<28)-2; }
+	uint32            maxLevel()   const { return (1u<<28)-1; }
 	//! Returns v's value in the three-valued assignment.
 	ValueRep          value(Var v) const { return ValueRep(assign_[v] & 3u); }
+	//! Returns v's previously saved value in the three-valued assignment.
+	ValueRep          saved(Var v) const { return v < phase_.size() ? ValueRep(phase_[v] & 3u)  : value_free; }
+	//! Returns v's preferred value or value_free if not set.
+	ValueRep          pref(Var v)  const { return v < phase_.size() ? ValueRep(phase_[v] >> 2) : value_free; }
 	//! Returns the decision level on which v was assigned if value(v) != value_free.
 	uint32            level(Var v) const { return assign_[v] >> 4u; }
-	//! Returns true if v was not eliminated from the assignment.
-	bool              valid(Var v) const { return (assign_[v] & elim_mask) != elim_mask; }
-	//! Returns the set of preferred values of v.
-	const ValueSet    pref(Var v)  const { return v < pref_.size() ? pref_[v] : ValueSet(); }
 	//! Returns the reason for v being assigned if value(v) != value_free.
 	const Antecedent& reason(Var v)const { return reason_[v]; }
 	//! Returns the number of allocated data slots.
@@ -631,19 +555,17 @@ public:
 		reason_.push_back(0);
 		return numVars()-1;
 	}
-	//! Allocates space for storing preferred values for all variables.
-	void requestPrefs() {
-		if (pref_.size() != assign_.size()) { pref_.resize(assign_.size()); }
-	}
 	//! Allocates data slots for nv variables to be used for storing additional reason data.
 	void requestData(uint32 nv) {
 		reason_.dataResize(nv);
 	}
-	//! Eliminates v from the assignment.
+	//! Eliminates var from assignment.
 	void eliminate(Var v) {
 		assert(value(v) == value_free && "Can not eliminate assigned var!\n");
-		if (valid(v)) { assign_[v] = elim_mask|value_true; ++elims_; }
+		setValue(v, value_true);
+		++eliminated_;
 	}
+
 	//! Assigns p.var() on level lev to the value that makes p true and stores x as reason for the assignment.
 	/*!
 	 * \return true if the assignment is consistent. False, otherwise.
@@ -653,7 +575,6 @@ public:
 		const Var      v   = p.var();
 		const ValueRep val = value(v);
 		if (val == value_free) {
-			assert(valid(v));
 			assign_[v] = (lev<<4) + trueValue(p);
 			reason_[v] = x;
 			trail.push_back(p);
@@ -665,7 +586,6 @@ public:
 		const Var      v   = p.var();
 		const ValueRep val = value(v);
 		if (val == value_free) {
-			assert(valid(v));
 			assign_[v] = (lev<<4) + trueValue(p);
 			reason_[v] = c;
 			reason_.setData(v, data);
@@ -680,15 +600,24 @@ public:
 	 * \param save  If true, previous assignment of a var is saved before it is undone.
 	 */
 	void undoTrail(LitVec::size_type first, bool save) {
-		if (!save) { popUntil<&Assignment::clear>(trail[first]); }
-		else       { requestPrefs(); popUntil<&Assignment::saveAndClear>(trail[first]); }
-		qReset();
+		if (!save) { popUntil<&Assignment::clearValue>(trail[first]); }
+		else       { phase_.resize(numVars(), 0); popUntil<&Assignment::saveAndClear>(trail[first]); }
+		front  = trail.size();
 	}
 	//! Undos the last assignment.
-	void undoLast() { clear(trail.back().var()); trail.pop_back(); }
+	void undoLast() { clearValue(trail.back().var()); trail.pop_back(); }
 	//! Returns the last assignment as a true literal.
 	Literal last() const { return trail.back(); }
 	Literal&last()       { return trail.back(); }
+	//! Sets val as "previous value" of v.
+	void setSavedValue(Var v, ValueRep val) {
+		if (phase_.size() <= v) phase_.resize(numVars(), 0);
+		save(v, val);
+	}
+	void setPrefValue(Var v, ValueRep val) {
+		if (phase_.size() <= v) phase_.resize(numVars(), 0);
+		phase_[v] = (phase_[v] & 3u) | (val << 2);
+	}
 	/*!
 	 * \name Implementation functions
 	 * Low-level implementation functions. Use with care and only if you
@@ -698,23 +627,20 @@ public:
 	bool seen(Var v, uint8 m) const { return (assign_[v] & (m<<2)) != 0; }
 	void setSeen(Var v, uint8 m)    { assign_[v] |= (m<<2); }
 	void clearSeen(Var v)           { assign_[v] &= ~uint32(12); }
-	void clearValue(Var v)          { assign_[v] &= ~uint32(3); }
+	void clearValue(Var v)          { assign_[v] = 0; }
 	void setValue(Var v, ValueRep val) {
 		assert(value(v) == val || value(v) == value_free);
-		assign_[v] |= val;
+		assign_[v] = val;
 	}
 	void setReason(Var v, const Antecedent& a) { reason_[v] = a;  }
 	void setData(Var v, uint32 data) { reason_.setData(v, data); }
-	void setPref(Var v, ValueSet::Value which, ValueRep to) { pref_[v].set(which, to); }
 	void copyAssignment(Assignment& o) const { o.assign_ = assign_; }
-	bool markUnits()                 { while (units_ != front) { setSeen(trail[units_++].var(), 3u); }  return true; }
 	//@}
 private:
-	static const uint32 elim_mask = uint32(0xFFFFFFF0u);
 	Assignment(const Assignment&);
 	Assignment& operator=(const Assignment&);
-	void    clear(Var v)              { assign_[v]= 0; }
-	void    saveAndClear(Var v)       { pref_[v].save(value(v)); clear(v); }
+	void    save(Var v, ValueRep val) { phase_[v] = (phase_[v] & uint8(0xFC)) | val; }
+	void    saveAndClear(Var v)       { save(v, value(v)); clearValue(v); }
 	template <void (Assignment::*op)(Var v)>
 	void popUntil(Literal stop) {
 		Literal p;
@@ -725,9 +651,8 @@ private:
 	}
 	AssignVec assign_; // for each var: three-valued assignment
 	ReasonVec reason_; // for each var: reason for being assigned (+ optional data)
-	PrefVec   pref_;   // for each var: set of preferred values
-	uint32    elims_;  // number of variables that were eliminated from the assignment
-	uint32    units_;  // number of marked top-level assignments
+	PhaseVec  phase_;  // for each var: previous assignment and fixed sign (if any)
+	uint32    eliminated_;
 };
 
 //! Stores information about a literal that is implied on an earlier level than the current decision level.

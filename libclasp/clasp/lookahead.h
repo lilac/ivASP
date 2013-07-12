@@ -143,7 +143,6 @@ public:
 		body_lookahead,   /**< Test only bodies in both phases */
 		hybrid_lookahead, /**< Test atoms and bodies but only their preferred decision literal */
 	};
-	static bool isType(uint32 t) { return t != 0 && t <= hybrid_lookahead; }
 	/*!
 	 * \param t Lookahead-type to use.
 	 */
@@ -158,18 +157,17 @@ public:
 	//! Adds literal p to the lookahead list.
 	void    append(Literal p, bool testBoth);
 	//! Single-step lookahead on all vars in the loookahead list.
-	bool    propagateFixpoint(Solver& s, PostPropagator*);
-	//! Returns PostPropagator::priority_reserved_look.
+	bool    propagateFixpoint(Solver& s);
+	//! Returns PostPropagator::priority_lookahead.
 	uint32  priority() const;
 	void    destroy(Solver* s, bool detach);
 	//! Updates state with lookahead result.
 	ScoreLook score;
 	//! Returns "best" literal w.r.t scoring of last lookahead or posLit(0) if no such literal exists.
 	Literal heuristic(Solver& s);
-
-	void    setLimit(UnitHeuristic* n);
 protected:
-	bool propagateLevel(Solver& s); // called by propagate
+	friend class UnitHeuristic;
+	bool propagate(Solver& s); // called by propagateFixpoint
 	void undoLevel(Solver& s);
 	bool test(Solver& s, Literal p);
 private:
@@ -182,7 +180,6 @@ private:
 	};
 	typedef PodVector<NodeId>::type  UndoStack;
 	typedef PodVector<LitNode>::type LookList;
-	typedef UnitHeuristic*           HeuPtr;
 	void splice(NodeId n);
 	LitNode* node(NodeId n) { return &nodes_[n]; }
 	LitNode* head()         { return &nodes_[head_id]; } // head of circular candidate list
@@ -195,7 +192,6 @@ private:
 	NodeId     last_;  // last candidate in list; invariant: node(last_)->next == head_id;
 	NodeId     pos_;   // current lookahead start position
 	uint32     top_;   // size of top-level
-	HeuPtr     limit_; // 
 };
 
 //! Heuristic that uses the results of lookahead.
@@ -219,16 +215,36 @@ public:
 	 * \param t Lookahead-type to use.
 	 */
 	explicit UnitHeuristic(Lookahead::Type t);
-	//! Decorates the heuristic given in other with temporary lookahead of type t.
-	static UnitHeuristic* restricted(Lookahead::Type t, uint32 numOps, DecisionHeuristic* other);
+	~UnitHeuristic();
 	void endInit(Solver& s);
 	void resurrect(const Solver&, Var v);
 	Literal doSelect(Solver& s);
-	virtual bool notify(Solver&) { return true; }
-protected:
+private:
 	Lookahead*      look_; // lookahead propagator
 	Lookahead::Type type_; // type of lookahead & heuristic
 };
 
+class RestrictedUnit : public DecisionHeuristic {
+public:
+	~RestrictedUnit();
+	//! Extends the decision heuristic of s so that the next k choices are based on lookahead.
+	static  void decorate(Solver& s, uint32 k, Lookahead* look);
+private:
+	explicit RestrictedUnit(uint32 k, Lookahead* look, DecisionHeuristic* def);
+	void startInit(const Solver& s)        { default_->startInit(s); }
+	void resurrect(const Solver& s, Var v) { default_->resurrect(s, v); }
+	void simplify(const Solver&  s, LitVec::size_type st) { default_->simplify(s, st); }
+	void undoUntil(const Solver& s, LitVec::size_type st) { default_->undoUntil(s, st);}
+	void newConstraint(const Solver& s, const Literal* f, LitVec::size_type sz, ConstraintType t) { default_->newConstraint(s, f, sz, t); }
+	void updateReason(const Solver& s, const LitVec& lits, Literal resolveLit) { default_->updateReason(s, lits, resolveLit); }
+	bool bump(const Solver& s, const WeightLitVec& lits, double adj)           { return default_->bump(s, lits, adj); }
+	Literal selectRange(Solver& s, const Literal* first, const Literal* last)  { return default_->selectRange(s, first, last); }
+	void    endInit(Solver& s);
+	Literal doSelect(Solver& s);
+	void    destroy(Solver& s);
+	Lookahead*         look_;
+	DecisionHeuristic* default_;
+	uint32             numChoices_;
+};
 }
 #endif

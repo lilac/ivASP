@@ -28,9 +28,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
 #define snprintf _snprintf
 #pragma warning (disable : 4996)
+static int mkstemp(char* templ) {
+	int fd;
+	std::size_t x = strlen(templ);
+	assert(x >= 6);
+	do {
+		_mktemp(templ);
+		fd = _open(templ, _O_CREAT | _O_EXCL | _O_BINARY | _O_RDWR, _S_IREAD | _S_IWRITE);
+		if (fd != -1) break;
+		strcpy((templ+x)-6, "XXXXXX");
+	} while (errno == EEXIST);
+	return fd;
+}
 #endif
+static const char* getTempPath() { 
+	if (const char* x1 = getenv("TMP"))  return x1;
+	if (const char* x2 = getenv("TEMP")) return x2;
+	return P_tmpdir;
+}
 namespace Clasp {
 ReadError::ReadError(unsigned line, const char* msg) : ClaspError(format(line, msg)), line_(line) {}
 std::string ReadError::format(unsigned line, const char* msg) {
@@ -185,37 +206,34 @@ bool LparseReader::readRules() {
 }
 
 bool LparseReader::readRule(int rt) {
-	int  bound   = -1;
-	bool weights = false;
-	rule_.setType(static_cast<RuleType>(rt));
-	if ( rt == BASICRULE || rt == CONSTRAINTRULE || rt == WEIGHTRULE) {
-		weights = rt == WEIGHTRULE;
+	int bound = -1;
+	check(rt > 0 && rt <= 6 && rt != 4, "Unsupported rule type!");
+	RuleType type(static_cast<RuleType>(rt));
+	rule_.setType(type);
+	if ( type == BASICRULE || rt == CONSTRAINTRULE || rt == WEIGHTRULE) {
 		rule_.addHead(parseAtom());
-		check(!weights || source_->parseInt(bound, 0, INT_MAX), "Weightrule: Positive weight expected!");
+		check(rt != WEIGHTRULE || source_->parseInt(bound, 0, INT_MAX), "Weightrule: Positive weight expected!");
 	}
-	else if (rt == CHOICERULE || rt == DISJUNCTIVERULE) {
+	else if (rt == CHOICERULE) {
 		int heads = 0;
-		check(source_->parseInt(heads, 1, INT_MAX), "Rule has too few heads");
+		check(source_->parseInt(heads, 1, INT_MAX), "Choicerule: To few heads");
 		for (int i = 0; i < heads; ++i) {
 			rule_.addHead(parseAtom());
 		}
 	}
-	else if (rt == OPTIMIZERULE) {
+	else {
+		assert(rt == 6);
 		int x = 0;
 		check(source_->parseInt(x,0,0), "Minimize rule: 0 expected!");
-		weights = true;
-	}
-	else {
-		throw ReadError(source_->line(), "Unsupported rule type!");
 	}
 	int lits = 0, neg = 0;
 	check(source_->parseInt(lits, 0, INT_MAX), "Number of body literals expected!");
 	check(source_->parseInt(neg, 0, lits), "Illegal negative body size!");
 	check(rt != CONSTRAINTRULE || source_->parseInt(bound, 0, INT_MAX), "Constraint rule: Positive bound expected!");
 	if (bound >= 0) {
-		rule_.setBound(bound);
+		rule_.setBound(static_cast<uint32>(bound));
 	}
-	return readBody(static_cast<uint32>(lits), static_cast<uint32>(neg), weights);
+	return readBody(static_cast<uint32>(lits), static_cast<uint32>(neg), rt >= 5);  
 }
 
 bool LparseReader::readBody(uint32 lits, uint32 neg, bool readWeights) {
@@ -276,123 +294,216 @@ bool LparseReader::endParse() {
 // DIMACS PARSING
 /////////////////////////////////////////////////////////////////////////////////////////
 #define ERROR(x) throw ReadError(in.line(), (x));
-struct FlagSet {
-	bool assign(SharedContext& ctx, bool pure) {
-		bool ok = true;
-		uint32 p= 12;
-		for (Var v = pure ? 1 : (Var)state.size(); v != (Var)state.size() && ok; ++v) {
-			uint32 m = state[v];
-			if ( (m & p) != p ) { ok = ctx.addUnary(Literal(v, ((m>>2) & 1u) != 1)); }
-		}
-		return ok;
-	}
-	bool seen(Var v)      const { return (state[v] & 3u) != 0; }
-	bool seen(Literal x)  const { return (state[x.var()] & (1u+x.sign())) != 0; }
-	void markSeen(Literal x)    { state[x.var()] |= (1u + x.sign()); }
-	void clearSeen(Literal x, bool addToP) { 
-		state[x.var()] &= ~3u; 
-		state[x.var()] |= (uint8(addToP) << (2+x.sign())); 
-	}
-	PodVector<uint8>::type state;
-};
-class SoftClauses : private SatPreprocessor {
+
+class TempFile {
 public:
-	SoftClauses() { pre = this; }
-	Literal add(LitVec& cc) {
-		if (cc.size() == 1) { return ~cc[0]; }
-		cc.push_back(posLit(++auxVar));
-		pre->addClause(cc);
-		return cc.back();
+	TempFile() : file_(0), name_(0) {}
+	~TempFile() { destroy(); }
+	bool create() {
+		destroy();
+		const char* t = getTempPath();
+		name_ = (char*)malloc(strlen(t) + strlen("/clasp.XXXXXX") + 1);
+		strcpy(name_, t);
+		strcat(name_, "/clasp.XXXXXX");
+		int fd= mkstemp(name_);
+		return fd != -1 && (file_ = fdopen(fd, "wb+")) != 0;
 	}
-	bool    addClauses(SharedContext& ctx) {
-		if (auxVar != ctx.numVars()) {
-			Var maxVar = ctx.numVars();
-			ctx.reserveVars(auxVar+1);
-			while (maxVar != auxVar) { maxVar = ctx.addVar(Var_t::atom_var); }
-			ctx.startAddConstraints();
+	void destroy() {
+		if (file_) {
+			fclose(file_);
+			remove(name_);
+			file_ = 0;
 		}
-		return preprocess(ctx, true);
+		free(name_);
+		name_ = 0; 
 	}
-	SatPreprocessor* pre;
-	Var              auxVar;
+	bool read(void* buf, uint32 size, uint32 count) {
+		return fread(buf, size, count, file_) == count;
+	}
+	bool write(void* buf, uint32 size, uint32 count) {
+		return fwrite(buf, size, count, file_) == count;
+	}
+	void rewind() { ::rewind(file_); }
 private:
-	bool initPreprocess(bool) { return false; }
-	bool doPreprocess()       { return true;  }
-	void doExtendModel(Assignment&, LitVec&) {}
-	void doCleanUp() {}
-	SatPreprocessor* clone()  { return 0; }
+	TempFile(const TempFile&);
+	TempFile& operator=(const TempFile&);
+	FILE* file_;
+	char* name_;
 };
 
 bool parseDimacsImpl(std::istream& prg, SharedContext& ctx, PureLitMode pure, ObjectiveFunction& opt, bool maxSat) {
-	int numVars = -1;
-	bool wcnf   = false, ok = true;
-	wsum_t cw   = 1, top = 1, maxW = std::numeric_limits<weight_t>::max(); 
-	LitVec cc;
-	FlagSet fs;
-	SoftClauses soft;
+	LitVec currentClause;
+	ClauseCreator nc(ctx.master());
+	SatPreprocessor* p = 0;
+	int numVars = -1, lastVar = 0, maxVar = 0, numClauses = 0;
+	bool ret = true;
 	StreamSource in(prg);
-	WeightLitVec& relax = opt.lits;
-	Solver& s           = *ctx.master();
-	ConstraintType t    = Constraint_t::static_constraint;
-	for (uint32 state = 0, pos = 0; ok;)  {
+	
+	// For each var v: 0000p1p2c1c2
+	// p1: set if v occurs negatively in any clause
+	// p2: set if v occurs positively in any clause
+	// c1: set if v occurs negatively in the current clause
+	// c2: set if v occurs positively in the current clause
+	PodVector<uint8>::type  flags;
+	TempFile temp;
+	bool  wcnf  = false, partial = false;
+	wsum_t top  = 1;
+	uint8  keep = 12u;
+	for (uint32 state = 0;ret;)  {
 		in.skipWhite();
 		if      (*in == 'c')       { skipLine(in); }
 		else if (*in == 0 && state){ break; }
 		else if (state == 1)       { // read clause
+			int64 cw = 1;
 			if (wcnf && (!in.parseInt64(cw) || cw < 1)) { ERROR("wcnf: clause weight expected!"); }
-			cc.clear();
-			for (int lit, uLit; (ok = in.parseInt(lit)) == true && lit != 0;) {
-				if ((uLit=abs(lit)) > numVars) { ERROR("Unrecognized format - variables must be numbered from 1 up to $VARS!"); }
-				in.skipWhite();
-				cc.push_back(Literal(uLit, lit < 0));
-			}
-			if      (!ok)      { ERROR("Unrecognized format - invalid clause!"); }
+			int lit;
+			Literal rLit;
 			bool sat = false;
-			LitVec::iterator j = cc.begin();
-			for (LitVec::const_iterator it = cc.begin(), end = cc.end(); it != end; ++it) {
-				Literal x = *it;
-				if      (!fs.seen(x.var())) { *j++ = x; fs.markSeen(x);   }
-				else if (fs.seen(~x))       { sat = true; cw = top; break; }
-			}
-			cc.erase(j, cc.end());
-			for (LitVec::const_iterator it = cc.begin(), end = cc.end(); it != end; ++it) {
-				fs.clearSeen(*it, !sat);
-			}
-			if      (top == cw)  { ok = sat || ClauseCreator::create(s, cc, t).ok(); }
-			else if (cw > maxW)  { ERROR("Clause weight too large!"); }
-			else if (!cc.empty()){ relax.push_back(WeightLiteral(soft.add(cc), (weight_t)cw)); }
-			else                 { ok = false; }
-			if (s.queueSize())   { 
-				ok = ok && s.propagate(); 
-				while (pos != s.numAssignedVars()) { fs.markSeen(~s.trail()[pos++]); }
+			currentClause.clear();
+			for (;;){
+				if (!in.parseInt(lit))  { ERROR("Bad parameter in clause!"); }
+				if (abs(lit) > numVars) { ERROR("Unrecognized format - variables must be numbered from 1 up to $VARS!"); }
+				in.skipWhite();
+				rLit = lit >= 0 ? posLit(lit) : negLit(-lit);
+				if (lit == 0) {
+					nc.start();
+					if (!sat && top != cw) {
+						weight_t w = (weight_t)cw;
+						if (w != cw) { ERROR("Clause weight too large!"); }
+						// soft clause
+						if (currentClause.size() > 1) {
+							flags.push_back(keep); // not pure!
+							currentClause.push_back(posLit(++lastVar));
+							opt.lits.push_back(WeightLiteral(currentClause.back(), w));
+						}
+						else {
+							// unit clause - only optimize literal
+							Literal x = currentClause.back();
+							opt.lits.push_back(WeightLiteral(~x, w));
+							flags[x.var()] |= keep;
+							sat = true;
+						}
+					}
+					if (!sat && partial) {
+						uint32 size = (uint32)currentClause.size();
+						if (!temp.write(&size, sizeof(uint32), 1)) {
+							throw std::runtime_error("Could not write to temp file!");
+						}
+						if (!temp.write((uint32*)&currentClause[0], sizeof(uint32), size)) {
+							throw std::runtime_error("Could not write to temp file!");
+						}
+						++numClauses;
+						sat = true;
+					}
+					for (LitVec::iterator it = currentClause.begin(); it != currentClause.end(); ++it) {
+						flags[it->var()] &= ~3u; // clear "in clause"-flags
+						if (!sat) { 
+							// update "in problem"-flags
+							flags[it->var()] |= ((1 + it->sign()) << 2);
+							nc.add(*it);
+						}
+					}
+					ret = sat || nc.end();
+					break;
+				}
+				else if ( (flags[rLit.var()] & (1+rLit.sign())) == 0 ) {
+					currentClause.push_back(rLit);
+					flags[rLit.var()] |= 1+rLit.sign();
+					if ((flags[rLit.var()] & 3u) == 3u) sat = true;
+				}
 			}
 		}
 		else if (match(in, "p ", false)) {
 			if (match(in, "cnf", false) || (wcnf=match(in, "wcnf", false)) == true) {
-				int numC = 0;
-				if (!in.parseInt(numVars, 0, (int)varMax) || !in.parseInt(numC, 0, INT_MAX) ) {
+				if (!in.parseInt(numVars, 0, (int)varMax) || !in.parseInt(numClauses, 0, INT_MAX)) {
 					ERROR("Bad parameters in the problem line!");
 				}
-				state        = 1;
-				bool partial = wcnf && in.parseInt64(top);
-				top          = !partial ? 1 - (maxSat||wcnf) : top;
-				ctx.reserveVars(numVars+1);
-				for (int v = 1; v <= numVars; ++v) { ctx.addVar(Var_t::atom_var); }
+				partial = wcnf && in.parseInt64(top);
+				lastVar = numVars;
+				if (!partial) {
+					top    = 1 - (wcnf || maxSat);
+					maxVar = numVars + (int)((1-top)*numClauses);
+					flags.reserve(maxVar+1);
+					flags.resize(numVars+1);
+					ctx.reserveVars(maxVar+1);
+					for (int v = 1; v <= maxVar; ++v) {
+						ctx.addVar(Var_t::atom_var);
+					}
+					// prepare solver/preprocessor for adding constraints
+					ctx.startAddConstraints(std::min(numClauses, 10000));
+				}
+				else {
+					maxSat = false;
+					maxVar = numVars;
+					flags.reserve( (maxVar+1) + (numClauses/10) );
+					flags.resize(maxVar+1);
+					if ( !temp.create() ) {
+						throw std::runtime_error("Could not create temp file!");
+					}
+					numClauses = 0;
+				}
 				ctx.symTab().startInit();
 				ctx.symTab().endInit(SymbolTable::map_direct, numVars+1);
-				ctx.startAddConstraints(std::min(numC, 10000));
-				fs.state.resize(numVars + 1);
-				soft.auxVar = numVars;
-				if (ctx.satPrepro.get()) { soft.pre = ctx.satPrepro.get(); }
+				if (ctx.satPrepro.get() && ctx.satPrepro->limit(numClauses)) {
+					// Don't waste time preprocessing a gigantic problem
+					p = ctx.satPrepro.release(); 
+				}
 			}
 			else { ERROR("Unrecognized format!"); }
+			state = 1;
 		}
 		else { ERROR("Missing problem line!"); }
 	}
-	ok         = ok && soft.addClauses(ctx);
-	ok         = ok && fs.assign(ctx, (pure == PureLitMode_t::assert_pure_yes || (pure == PureLitMode_t::assert_pure_auto && opt.lits.empty())));
-	return ok;
+	if (partial) {
+		maxVar = lastVar;
+		assert(flags.size() == static_cast<uint32>(maxVar+1));
+		ctx.reserveVars(maxVar + 1);
+		for (int v = 1; v <= maxVar; ++v) {
+			ctx.addVar(Var_t::atom_var);
+		}
+		// prepare solver/preprocessor for adding constraints
+		ctx.startAddConstraints(numClauses);
+		Literal x;
+		temp.rewind();
+		uint32 size;
+		for (int i = 0; i != numClauses && ret; ++i) {
+			if (!temp.read(&size, sizeof(uint32), 1)) {
+				throw std::runtime_error("Could not read from temp file!");
+			}
+			currentClause.resize(size);
+			if (!temp.read((uint32*)&currentClause[0], sizeof(uint32), size)) {
+				throw std::runtime_error("Could not read from temp file!");
+			}
+			nc.start();
+			for (uint32 j = 0; j != size; ++j) {
+				x = currentClause[j];
+				nc.add(x);
+				flags[x.var()] |= ((1 + x.sign()) << 2);
+			}
+			ret = nc.end();
+		}
+		temp.destroy();
+	}
+	if (p) {
+		ctx.satPrepro.reset(p);
+	}
+	if (pure == PureLitMode_t::assert_pure_auto) {
+		if (opt.lits.empty()) { pure = PureLitMode_t::assert_pure_yes; }
+		else                  { pure = PureLitMode_t::assert_pure_no;  }
+	}
+	if (pure == PureLitMode_t::assert_pure_yes) {
+		for (int i = 1; ret && i <= lastVar && ret; ++i) {
+			if ((flags[i] & keep) != keep) {
+				ret = ctx.addUnary(Literal(i, ((flags[i]>>2) & 1u) != 1));
+			}
+		}
+	}
+	for (int v = lastVar+1; v <= maxVar; ++v) {
+		ctx.addUnary(negLit(v));
+	}
+	return ret;
 }
+
 /////////////////////////////////////////////////////////////////////////////////////////
 // OPB PARSING
 /////////////////////////////////////////////////////////////////////////////////////////

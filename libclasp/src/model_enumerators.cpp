@@ -162,7 +162,7 @@ bool BacktrackEnumerator::doBacktrack(Solver& s, uint32 bl) {
 		// destroyed. Hence, the number of projection nogoods is linear in the
 		// number of (projection) atoms.
 		if ( (projectOpts_ & ENABLE_PROGRESS_SAVING) != 0 ) {
-			s.strategy.saveProgress = 1;
+			s.strategies().saveProgress = 1;
 		}
 		projAssign_.clear();
 		projAssign_.resize(numProjectionVars());

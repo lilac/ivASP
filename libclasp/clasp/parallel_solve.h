@@ -63,8 +63,11 @@ struct ParallelSolveOptions {
 	Integration  integrate; /**< Nogood integration parameters. */
 	GRestarts    restarts;  /**< Global restart strategy. */
 	SearchMode   mode;
-	//! Allocates a new solve object and stores it in ctx.
-	void createSolveObject(SharedContext& ctx) const;
+	//! Returns a newly allocated solve object in out.
+	/*!
+	 * \pre sc points to an array of size >= ctx.numSolvers().
+	 */
+	void createSolveObject(SolveAlgorithm*& out, SharedContext& ctx, SolverConfig** sc) const;
 	//! Returns the number of threads that can run concurrently on the current hardware.
 	static uint32   recommendedSolvers() { return std::thread::hardware_concurrency(); }
 	//! Returns number of maximal number of supported threads.
@@ -89,15 +92,21 @@ public:
 	~ParallelSolve();
 	// own interface
 
+	//! Attaches a new thread to s and runs it in this algorithm.
+	/*!
+	 * Shall be called once for each solver except the master.
+	 * \pre s.id() != Solver::invalidId
+	 */
+	void   addSolver(Solver& s, const SolveParams& p);
+	
 	//! Returns the number of active threads.
 	uint32 numThreads()            const;
 	bool   integrateUseHeuristic() const { return test_bit(intFlags_, 31); }
 	uint32 integrateGrace()        const { return intGrace_; }
 	uint32 integrateFlags()        const { return intFlags_; }
-	uint64 hasErrors()             const { return error_; }
+	bool   hasErrors()             const { return error_ != 0; }
 	//! Terminates current solving process and all client threads.
 	bool   terminate();
-	bool   terminated() const;
 	//! Requests a global restart.
 	void   requestRestart();
 	bool   handleMessages(Solver& s);
@@ -119,9 +128,8 @@ private:
 	// Algorithm steps
 	void   setIntegrate(uint32 grace, uint8 filter);
 	void   setRestarts(uint32 maxR, const ScheduleStrategy& rs);
-	bool   doSolve(Solver& s, const SolveParams& p, const LitVec& assume);
+	bool   doSolve(Solver& s, const SolveParams& p);
 	void   solveParallel(uint32 id);
-	bool   satisfiable(SharedContext& ctx, Solver& s, const SolveParams& p, const LitVec& assume);
 	bool   initOpt(Solver& s, ValueRep last);
 	void   initQueue();
 	bool   requestWork(Solver& s, PathPtr& out);
@@ -136,17 +144,19 @@ private:
 	SharedData*       shared_;       // Shared control data
 	ParallelHandler** thread_;       // Thread-locl control data
 	// READ ONLY
-	uint64            error_;        // bitmask of erroneous solvers
 	uint32            maxRestarts_;  // disable global restarts once reached 
 	uint32            intGrace_;     // grace period for clauses to integrate
 	uint32            intFlags_;     // bitset controlling clause integration
+	int               error_;
 	GpType            initialGp_;
 };
 
 //! A per-solver (i.e. thread) class that implements message handling and knowledge integration.
 /*!
- * The class adds itself as a post propagator to the given solver. During propagation
- * it checks for new messages and lemmas to integrate.
+ * The class adds itself as a post propagator to the given solver. Each time
+ * propagateFixpoint() is called (i.e. on each new decision level), it checks
+ * for new lemmas to integrate and synchronizes the search with any new models.
+ * Furthermore, it adds a second (high-priority) post propagator for message handling.
  */
 class ParallelHandler : public PostPropagator {
 public:
@@ -178,13 +188,13 @@ public:
 	
 	// overridden methods
 	
-	//! As a message handler, this post propagator has the highest possible priority.
-	uint32 priority() const { return priority_reserved_msg; }
+	//! Returns a priority suited for a post propagators that is non-deterministic.
+	uint32 priority() const { return priority_general + 100; }
 
 	//! Integrates new information.
-	bool propagateFixpoint(Solver& s, PostPropagator*);
-	void reset() { up_ = 1; }
-	bool simplify(Solver& s, bool re);
+	bool propagateFixpoint(Solver& s);
+	bool propagate(Solver& s) { return ParallelHandler::propagateFixpoint(s); }
+	void reset()              { up_ = 1; }
 	//! Checks whether new information has invalidated current model.
 	bool isModel(Solver& s);
 
@@ -233,29 +243,26 @@ public:
 	 */
 	bool handleRestartMessage();
 
+	SolveStats aggStats;  // aggregated statistics over all gps
 	Solver&            solver()      { return *solver_; }
 	const SolveParams& params() const{ return *params_; }
 	//@}  
 private:
+	bool simplify(Solver& s, bool re);
+	bool integrateClauses(Solver& s);
 	void add(ClauseHead* h);
 	void clearDB(Solver* s);
-	bool integrate(Solver& s);
-	bool handleUpdates(Solver& s);
+	ParallelSolve* ctrl() const { return messageHandler_.ctrl; }
 	typedef LitVec::size_type size_type;
 	typedef PodVector<Constraint*>::type ClauseDB;
-	typedef SharedLiterals**             RecBuffer;
-	enum { RECEIVE_BUFFER_SIZE = 32 };
-	ParallelSolve*     ctrl_;       // my message source
+	std::thread        thread_;     // active thread or empty for master
+	ClauseDB           integrated_; // my integrated clauses
 	Solver*            solver_;     // my solver
 	const SolveParams* params_;     // my solving params
-	std::thread        thread_;     // active thread or empty for master
-	RecBuffer          received_;   // received clauses not yet integrated
-	ClauseDB           integrated_; // my integrated clauses
-	size_type          recEnd_;     // where to put next received clause
-	size_type          intEnd_;     // where to put next clause
+	size_type          intTail_;    // where to put next clause
 	uint32             error_:30;   // error code or 0 if ok
-	uint32             win_  : 1;   // 1 if thread was the first to terminate the search
-	uint32             up_   : 1;   // 1 if next propagate should check for new lemmas/models
+	uint32             win_  : 1;
+	uint32             up_   : 1;
 	struct GP {
 		LitVec      path;     // current guiding path
 		uint64      restart;  // don't give up before restart number of conflicts
@@ -270,6 +277,13 @@ private:
 			type    = t;
 		}
 	} gp_;
+	struct MessageHandler : PostPropagator {
+		explicit MessageHandler(ParallelSolve* c) : ctrl(c) {}
+		uint32 priority() const { return PostPropagator::priority_highest; }
+		bool   propagateFixpoint(Solver& s) { return ctrl->handleMessages(s); }
+		bool   propagate(Solver& s)         { return MessageHandler::propagateFixpoint(s); }
+		ParallelSolve* ctrl; // get messages from here
+	}    messageHandler_;
 };
 
 class GlobalQueue : public Distributor {

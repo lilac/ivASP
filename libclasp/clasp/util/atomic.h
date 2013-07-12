@@ -26,7 +26,7 @@
 
 #if WITH_THREADS
 #include <tbb/atomic.h>
-namespace std { using tbb::atomic; }
+namespace Clasp { using tbb::atomic; }
 #else
 namespace Clasp { namespace Serial {
 template <class T>
@@ -40,11 +40,6 @@ struct atomic {
 	value_type operator++()             { return ++value;    }
 	value_type operator--()             { return --value;    }
 	value_type operator->() const       { return value;    }
-	value_type fetch_and_store(value_type v) {
-		value_type last= value;
-		value          = v;
-		return last;
-	}
 	value_type compare_and_swap(value_type y, value_type z) {
 		if (value == z) {
 			value = y;
@@ -55,12 +50,12 @@ struct atomic {
 	T value;
 };
 }}
-namespace std { using Clasp::Serial::atomic; }
+namespace Clasp { using Clasp::Serial::atomic; }
 #endif
 
 // effect: T temp; a |= mask; return temp
 template <class T>
-inline T fetch_and_or(std::atomic<T>& a, T mask) {
+inline T fetch_and_or(Clasp::atomic<T>& a, T mask) {
 	T x;
 	do {
 		x = a;
@@ -70,7 +65,7 @@ inline T fetch_and_or(std::atomic<T>& a, T mask) {
 
 // effect: T temp; a &= mask; return temp
 template <class T>
-inline T fetch_and_and(std::atomic<T>& a, T mask) {
+inline T fetch_and_and(Clasp::atomic<T>& a, T mask) {
 	T x;
 	do {
 		x = a;

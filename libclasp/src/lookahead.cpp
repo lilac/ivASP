@@ -68,8 +68,7 @@ Lookahead::Lookahead(Type type, bool imps)
 	: nodes_(2, LitNode(posLit(0)))
 	, last_(head_id)    // circular list
 	, pos_(head_id)     // lookahead start pos
-	, top_(uint32(-2))
-	, limit_(0) {
+	, top_(uint32(-2)) {
 	head()->next = head_id;
 	undo()->next = UINT32_MAX;
 	if (type != hybrid_lookahead) {
@@ -98,7 +97,7 @@ void Lookahead::destroy(Solver* s, bool detach) {
 	PostPropagator::destroy(s, detach);
 }
 
-uint32 Lookahead::priority() const { return priority_reserved_look; }
+uint32 Lookahead::priority() const { return priority_lookahead; }
 
 void Lookahead::clear() {
 	score.clearDeps();
@@ -171,7 +170,7 @@ bool Lookahead::checkImps(Solver& s, Literal p) {
 }
 
 // failed-literal detection - stop on failed-literal
-bool Lookahead::propagateLevel(Solver& s) {
+bool Lookahead::propagate(Solver& s) {
 	assert(!s.hasConflict());
 	saved_.resize(s.decisionLevel()+1, UINT32_MAX);
 	uint32 undoId = saved_[s.decisionLevel()];
@@ -207,14 +206,14 @@ bool Lookahead::propagateLevel(Solver& s) {
 	return ok;
 }
 
-bool Lookahead::propagateFixpoint(Solver& s, PostPropagator*) {
+bool Lookahead::propagateFixpoint(Solver& s) {
 	if ((empty() || top_ == s.numAssignedVars()) && !score.deps.empty()) {
 		// nothing to lookahead
 		return true;
 	}
 	bool ok = true;
 	uint32 dl;
-	for (dl = s.decisionLevel(); !propagateLevel(s); dl = s.decisionLevel()) {
+	for (dl = s.decisionLevel(); !propagate(s); dl = s.decisionLevel()) {
 		// some literal failed
 		// resolve and propagate conflict
 		assert(s.decisionLevel() >= dl);
@@ -230,8 +229,7 @@ bool Lookahead::propagateFixpoint(Solver& s, PostPropagator*) {
 		assert(s.queueSize() == 0);
 		top_ = s.numAssignedVars();
 		LitVec().swap(imps_);
-	}
-	if (limit_ && !limit_->notify(s)) { Lookahead::destroy(&s, true); }
+	}	
 	return ok;
 }
 
@@ -333,23 +331,27 @@ Literal Lookahead::heuristic(Solver& s) {
 	}
 	return choice;
 }
-void Lookahead::setLimit(UnitHeuristic* h) { limit_ = h; }
+
 /////////////////////////////////////////////////////////////////////////////////////////
 // Lookahead heuristic
 /////////////////////////////////////////////////////////////////////////////////////////
 UnitHeuristic::UnitHeuristic(Lookahead::Type t)
 	: look_(0)
-	, type_(t) {}
+	, type_(t) {
+}
+
+UnitHeuristic::~UnitHeuristic() { }
 
 void UnitHeuristic::endInit(Solver& s) { 
 	assert(s.decisionLevel() == 0);
-	if (s.strategy.heuReinit && look_) {
+	if (s.strategies().heuReinit && look_) {
 		look_->destroy(&s, true);
 		look_ = 0;
 	}
 	if (look_ == 0) { 
 		look_ = new Lookahead(type_);
-		look_->score.nant = s.strategy.unitNant && type_ == Lookahead::atom_lookahead;
+		look_->score.nant = s.strategies().unitNant && type_ == Lookahead::atom_lookahead;
+		look_->init(s);
 		s.addPost(look_);
 	}
 }
@@ -369,7 +371,7 @@ Literal UnitHeuristic::doSelect(Solver& s) {
 	}
 	look_->score.clearDeps();
 	look_->score.types = Var_t::atom_body_var;
-	return s.propagate()
+	return look_->propagateFixpoint(s) 
 		? look_->heuristic(s)
 		: negLit(0);
 }
@@ -382,52 +384,54 @@ void UnitHeuristic::resurrect(const Solver& s, Var v) {
 	}
 }
 /////////////////////////////////////////////////////////////////////////////////////////
-// Restricted Lookahead heuristic - lookahead and heuristic for a limited number of ops
+// Restricted Lookahead heuristic
 /////////////////////////////////////////////////////////////////////////////////////////
-class Restricted : public UnitHeuristic {
-public:
-	typedef LitVec::size_type size_t;
-	typedef ConstraintType    con_t;
-	Restricted(Lookahead::Type t, uint32 numOps, DecisionHeuristic* other)
-		: UnitHeuristic(t)
-		, other_(other)
-		, numOps_(numOps) {}
-	void restoreOther(Solver& s) {
-		s.heuristic().reset(other_.release());
-	}
-	// base interface
-	bool notify(Solver& s) {
-		if (--numOps_) { return UnitHeuristic::notify(s); }
-		restoreOther(s);
-		return false;
-	}
-	void resurrect(const Solver& s, Var v) { other_->resurrect(s, v); UnitHeuristic::resurrect(s, v); }
-	void endInit(Solver& s) {
-		UnitHeuristic::endInit(s);
-		other_->endInit(s);
-		if (numOps_ > 0){ look_->setLimit(this); }
-		else            { restoreOther(s);       }
-	}
-	Literal doSelect(Solver& s) {
-		return s.value(look_->score.best) == value_free
-			? UnitHeuristic::doSelect(s)
-			: other_->doSelect(s);
-	}
-	// heuristic interface - forward to other
-	void startInit(const Solver& s)           { other_->startInit(s); }
-	void simplify(const Solver& s, size_t st) { other_->simplify(s, st); }
-	void undoUntil(const Solver& s, size_t st){ other_->undoUntil(s, st); }
-	void updateReason(const Solver& s, const LitVec& x, Literal r)            { other_->updateReason(s, x, r); }
-	bool bump(const Solver& s, const WeightLitVec& w, double d)               { return other_->bump(s, w, d); }
-	void newConstraint(const Solver& s, const Literal* p, size_t sz, con_t t) { other_->newConstraint(s, p, sz, t); } 
-	Literal selectRange(Solver& s, const Literal* f, const Literal* l)        { return other_->selectRange(s, f, l); }
-private:
-	typedef SingleOwnerPtr<DecisionHeuristic> HeuPtr;
-	HeuPtr other_;
-	uint32 numOps_;
-};
-
-UnitHeuristic* UnitHeuristic::restricted(Lookahead::Type t, uint32 numOps, DecisionHeuristic* other) {
-	return new Restricted(t, numOps, other);
+RestrictedUnit::RestrictedUnit(uint32 k, Lookahead* look, DecisionHeuristic* def) 
+	: look_(look), default_(def), numChoices_(k) {
+	assert(look && k);
 }
+
+void RestrictedUnit::decorate(Solver& s, uint32 k, Lookahead* look) {
+	s.removePost(look);
+	RestrictedUnit* unit = new RestrictedUnit(k, look, s.heuristic().release());
+	s.heuristic().reset(unit);
+}
+
+RestrictedUnit::~RestrictedUnit() {
+	delete default_;
+	delete look_;
+}
+
+void RestrictedUnit::endInit(Solver& s) {
+	destroy(s);
+	s.heuristic()->endInit(s);
+}
+
+Literal RestrictedUnit::doSelect(Solver& s) {
+	s.addPost(look_);
+	Literal choice = look_->propagateFixpoint(s) ? look_->heuristic(s) : negLit(0);
+	s.removePost(look_);
+	// if all fld-candidates are currently assigned, use
+	// decorated heuristic to select next choice -
+	// if all vars are assigned after fld, we return posLit(0)
+	// as the "noop" choice.
+	if (choice == posLit(0) && s.numFreeVars() > 0) {
+		choice = default_->doSelect(s);
+	}
+	if (!isSentinel(choice) && --numChoices_ == 0) {
+		destroy(s);
+	}
+	return choice;
+}
+
+void RestrictedUnit::destroy(Solver& s) {
+	if (s.heuristic().get() == this) {
+		s.heuristic().release();
+	}
+	s.heuristic().reset(default_);
+	default_ = 0;
+	if (look_) { look_->destroy(&s, true); look_ = 0;  } 
+	delete this;
+}
+
 }

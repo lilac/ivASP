@@ -88,8 +88,6 @@ public:
 	explicit ClauseCreator(Solver* s = 0);
 	//! Sets the solver in which created clauses are stored.
 	void setSolver(Solver& s) { solver_ = &s; }
-	//! Adds additional flags to be applied in end().
-	void addFlags(uint32 f)   { flags_ |= f; }
 	//! Reserve space for a clause of size s.
 	void reserve(LitVec::size_type s) { literals_.reserve(s); }
 	//! Sets the initial activity for the to be created clause.
@@ -118,6 +116,7 @@ public:
 	//! Adds the literal p to the clause.
 	/*!
 	 * \note p is only added if p is free or the current DL is > 0.
+	 * \pre Clause neither contains p nor ~p.
 	 * \pre If clause was started with startAsserting() p is false!
 	 */
 	ClauseCreator& add(const Literal& p);
@@ -176,6 +175,9 @@ public:
 	 */
 	uint32 conflictLevel()    const { return fwLev_; }
 
+	//! Removes duplicate lits. Marks the clause as sat if it contains p and ~p.
+	void simplify();
+	
 	//! A type for storing the result of a clause insertion operation.
 	struct Result {
 		explicit Result(ClauseHead* loc = 0, Status st = status_open)
@@ -192,16 +194,7 @@ public:
 	//! Adds the clause to the solver if possible.
 	/*!
 	 * Adds the clause only if it is not conflicting.
-	 * \pre The clause does not contain duplicate/complementary literals or 
-	 *      setFlags(clause_force_simplify) was called.
-	 * 
 	 * \note If the clause to be added is empty, end() fails and s.hasConflict() is set to true.
-	 * \note The function assumes the following flags:
-	 *   - clause_known_order
-	 *   - clause_not_sat
-	 *   - clause_not_conflict
-	 *   .
-	 * \see Result ClauseCreator::create(Solver& s, LitVec& lits, uint32 flags, const ClauseInfo& info);
 	 */
 	Result end();
 
@@ -216,10 +209,6 @@ public:
 
 	//! Returns the status of the given clause w.r.t s.
 	static Status status(const Solver& s, const Literal* clause_begin, const Literal* clause_end);
-
-	//! Removes duplicate lits and replaces lits with posLit(0) if it contains complementary literals.
-	static void simplify(Solver& s, LitVec& lits);
-	       void simplify();
 
 	/*!
 	 * \name factory functions
@@ -236,7 +225,6 @@ public:
 		clause_no_release    = 32, /**< do not call release on shared literals */
 		clause_int_lbd       = 64, /**< compute lbd when integrating asserting clauses */
 		clause_known_order   = 128,/**< assume clause is already ordered w.r.t watches */
-		clause_force_simplify= 256,/**< call ClauseCreator::simplify() on create */
 	};
 
 	//! Creates a clause from the literals given in lits.
@@ -247,8 +235,7 @@ public:
 	 * \param info  Initial information (e.g. type) for the new clause.
 	 *
 	 * \pre !s.hasConflict() and s.decisionLevel() == 0 or extra.learnt()
-	 * \pre lits does not contain duplicate/complementary literals or 
-	 *      flags contains clause_force_simplify.
+	 * \pre lits does not contain duplicate/complementary literals
 	 *
 	 * \note 
 	 *   If the given clause is unit (or asserting), the unit-resulting literal is
@@ -259,8 +246,8 @@ public:
 	 *
 	 * \note 
 	 *   The local representation of the clause is always attached to the solver 
-	 *   but only added to the solver if clause_no_add is not contained in flags.
-	 *   Otherwise, the returned clause is owned by the caller
+	 *   but only added to the solver if clause_no_add is not contained in modeFlags.
+	 *   Otherwise, the returned clauses is owned by the caller
 	 *   and it is the caller's responsibility to manage it. Furthermore, 
 	 *   learnt statistics are *not* updated automatically in that case.
 	 *
@@ -281,21 +268,21 @@ public:
 	//! Integrates the given clause into the current search of s.
 	/*!
 	 * \pre the assignment in s is not conflicting
-	 * \param s      The solver in which the clause should be integrated.
-	 * \param clause The clause to be integrated.
-	 * \param flags  A set of flags controlling integration (see CreateFlag).
-	 * \param t      Constraint type to use for the local representation.
+	 * \param s           The solver in which the clause should be integrated.
+	 * \param clause      The clause to be integrated.
+	 * \param modeFlags   A set of flags controlling integration (see CreateFlag).
+	 * \param t           Constraint type to use for the local representation.
 	 * 
 	 * \note 
 	 *   The function behaves similar to ClauseCreator::create() with the exception that
 	 *   it does not add local representations for implicit clauses (i.e. size <= 3) 
-	 *   unless flags contains clause_explicit. 
+	 *   unless modeFlags contains clause_explicit. 
 	 *   In that case, an explicit representation is created. 
 	 *   Implicit representations can only be created via ClauseCreator::createClause().
 	 *
 	 * \note
 	 *   The function acts as a sink for the given clause (i.e. it decreases its reference count)
-	 *   unless flags contains clause_no_release.
+	 *   unless modeFlags contains clause_no_release.
 	 *   
 	 * \note integrate() is intended to be called in a post propagator. 
 	 *   To integrate a set of clauses F, one would use a loop like this:
@@ -309,11 +296,11 @@ public:
 	 *     return r;
 	 *   \endcode
 	 */
-	static Result integrate(Solver& s, SharedLiterals* clause, uint32 flags, ConstraintType t);
+	static Result integrate(Solver& s, SharedLiterals* clause, uint32 modeFlags, ConstraintType t);
 	/*!
-	 * \overload Result ClauseCreator::integrate(Solver& s, SharedLiterals* clause, uint32 flags, ConstraintType t)
+	 * \overload Result ClauseCreator::integrate(Solver& s, SharedLiterals* clause, uint32 modeFlags)
 	 */
-	static Result integrate(Solver& s, SharedLiterals* clause, uint32 flags);
+	static Result integrate(Solver& s, SharedLiterals* clause, uint32 modeFlags);
 	//@}
 private:
 	void init(ConstraintType t);
@@ -323,12 +310,11 @@ private:
 	static ClauseHead* newProblemClause(Solver& s, LitVec& lits, const ClauseInfo& e, uint32 flags);
 	static ClauseHead* newLearntClause(Solver& s,  LitVec& lits, const ClauseInfo& e, uint32 flags);
 	static ClauseHead* newUnshared(Solver& s, SharedLiterals* clause, const Watches& w, const ClauseInfo& e);
-	Solver*    solver_;   // solver in which new clauses are stored
-	LitVec     literals_; // literals of the new clause
-	ClauseInfo extra_;    // extra info 
-	uint32     fwLev_;    // decision level of the first watched literal
-	uint32     swLev_;    // decision level of the second watched literal
-	uint32     flags_;    // active set of flags
+	Solver*    solver_;    // solver in which new clauses are stored
+	LitVec     literals_;  // literals of the new clause
+	ClauseInfo extra_;     // extra info 
+	uint32     fwLev_;     // decision level of the first watched literal
+	uint32     swLev_;     // decision level of the second watched literal
 };
 
 //! Class for representing a clause in a solver.

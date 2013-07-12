@@ -91,8 +91,6 @@ typedef uintptr_t   uintp;
 // return true if bit n in x is set
 #define test_bit(x,n)  ( ((x) & BIT_MASK((x),(n))) != 0 )
 
-#define right_most_bit(x) ( (x) & (-(x)) )
-
 template <class T>
 bool aligned(void* mem) {
 	uintp x = reinterpret_cast<uintp>(mem);

@@ -43,54 +43,101 @@ Literal SelectFirst::doSelect(Solver& s) {
 /////////////////////////////////////////////////////////////////////////////////////////
 // Post propagator list
 /////////////////////////////////////////////////////////////////////////////////////////
-static PostPropagator* sent_list;
-Solver::PPList::PPList() : list(0) { enable(); }
+Solver::PPList::PPList() : head(0), look(0) { }
 Solver::PPList::~PPList() {
-	for (PostPropagator* r = head(); r;) {
+	enableFunky();
+	for (PostPropagator* r = head; r;) {
 		PostPropagator* t = r;
 		r = r->next;
 		t->destroy();
 	}
 }
+PostPropagator* Solver::PPList::disableFunky() {
+	// already disabled
+	if (look >= nil()) { return look != nil() ? look : 0; }
+	// move post propagators with priority >= lookahead to ext
+	PostPropagator* ext = 0;
+	if (head && head->priority() < PostPropagator::priority_lookahead) {
+		for (PostPropagator* r = head; r->next; r = r->next) {
+			if (r->next->priority() >= PostPropagator::priority_lookahead) {
+				ext     = r->next;
+				r->next = 0;
+				break;
+			}
+		}
+	}
+	else {
+		ext  = head;
+		head = 0;
+	}
+	// mark as disabled even if there is currently no funky post propagator
+	look = ext ? ext : nil();
+	return ext;
+}
+PostPropagator* Solver::PPList::enableFunky() {
+	// already enabled or empty list
+	if (look <= nil()) { return (look = 0); }
+	// move post propagators with priority >= lookahead back to active list
+	PostPropagator* ext = look;
+	look                = 0; // mark as enabled
+	PostPropagator* r  = head;
+	if (!r)         { return (head = ext); }
+	while (r->next) { r= r->next; }
+	return (r->next = ext);	
+}
 
-void Solver::PPList::disable() { act = &sent_list; }
-void Solver::PPList::enable()  { act = &list; }
-
-void Solver::PPList::add(PostPropagator* p, uint32 prio) {
+void Solver::PPList::add(PostPropagator* p) {
 	assert(p && p->next == 0);
-	for (PostPropagator** r = &list, *x;; r = &x->next) {
-		if ((x = *r) == 0 || prio <= x->priority()) {
-			p->next = x;
-			*r      = p;
-			break;
+	uint32 prio = p->priority();
+	PostPropagator** listHead = (look == 0 || prio < PostPropagator::priority_lookahead)
+		? &head
+		: &look;
+	if (*listHead <= nil() || prio < (*listHead)->priority()) {
+		p->next  = *listHead > nil() ? *listHead : 0;
+		*listHead= p;
+		return;
+	}
+	for (PostPropagator* r = *listHead;; r = r->next) {
+		if (!r->next || prio < r->next->priority()) {
+			p->next = r->next;
+			r->next = p;
+			return;
 		}
 	}
 }
 
 void Solver::PPList::remove(PostPropagator* p) {
 	assert(p);
-	for (PostPropagator** r = &list, *x; *r; r = &x->next) {
-		if ((x = *r) == p) {
-			*r      = x->next;
+	PostPropagator** listHead = (look == 0 || p->priority() < PostPropagator::priority_lookahead)
+		? &head
+		: &look;
+	if (*listHead <= nil()) { return; }
+	if (*listHead == p)     {
+		*listHead = (*listHead)->next;
+		p->next   = 0;
+		return;
+	}
+	for (PostPropagator* r = *listHead; r->next; r = r->next) {
+		if (r->next == p) {
+			r->next = r->next->next;
 			p->next = 0;
-			break;
+			return;
 		}
 	}
 }
 
 bool Solver::PPList::propagate(Solver& s, PostPropagator* x) const {
-	for (PostPropagator** r = act, *t; *r != x; ) {
-		t = *r;
-		if (!t->propagateFixpoint(s, x)) { return false; }
-		assert(s.queueSize() == 0);
-		if (t == *r) { r = &t->next; }
-		// else: t was removed during propagate
+	for (PostPropagator* p = head, *t; p != x;) {
+		// just in case t removes itself from the list
+		// during propagateFixpoint
+		t = p;
+		p = p->next;
+		if (!t->propagateFixpoint(s)) { return false; }
 	}
 	return true;
 }
-
 void Solver::PPList::simplify(Solver& s, bool shuf) {
-	for (PostPropagator* r = active(); r;) {
+	for (PostPropagator* r = head; r;) {
 		PostPropagator* t = r;
 		r = r->next;
 		if (t->simplify(s, shuf)) {
@@ -98,11 +145,23 @@ void Solver::PPList::simplify(Solver& s, bool shuf) {
 		}
 	}
 }
-
-void Solver::PPList::cancel()           const { for (PostPropagator* r = active(); r; r = r->next) { r->reset(); } }
+bool Solver::PPList::init(Solver& s, PostPropagator* list) const {
+	for (PostPropagator* r = list; r; r = r->next) {
+		if (!r->init(s)) return false;
+	}
+	return true;
+}
+bool PostPropagator::propagateFixpoint(Solver& s) {
+	bool ok = propagate(s);
+	while (ok && s.queueSize() > 0) {
+		ok = s.propagateUntil(this) && propagate(s);
+	}
+	return ok;
+}
+void Solver::PPList::reset() const      { for (PostPropagator* r = head; r; r = r->next) { r->reset(); } }
 bool Solver::PPList::isModel(Solver& s) const {
 	if (s.hasConflict()) { return false; }
-	for (PostPropagator* r = active(); r; r = r->next) {
+	for (PostPropagator* r = head; r; r = r->next) {
 		if (!r->isModel(s)) return false;
 	}
 	return true;
@@ -113,33 +172,33 @@ bool Solver::PPList::isModel(Solver& s) const {
 SolverStrategies::SolverStrategies() {
 	struct X { RNG y; uint32 z[3]; };
 	static_assert(sizeof(SolverStrategies) == sizeof(X), "Unsupported Padding");
-	std::memset(this, 0, sizeof(SolverStrategies));
-	rng        = RNG();
+	std::memset(&compress, 0, 3*sizeof(uint32));
 	ccMinAntes = all_antes;
-	heuOther   = 3;
-	heuMoms    = 1;
 	search     = use_learning;
 }
+SolverStrategies::HeuFactory SolverStrategies::heuFactory_s = 0;
 /////////////////////////////////////////////////////////////////////////////////////////
 // Solver: Construction/Destruction/Setup
 ////////////////////////////////////////////////////////////////////////////////////////
-Solver::Solver(SharedContext* ctx, uint32 id) 
-	: shared_(ctx)
+Solver::Solver() 
+	: strategy_()
 	, ccMin_(0)
 	, smallAlloc_(new SmallClauseAlloc)
+	, shared_(0)
 	, undoHead_(0)
 	, enum_(0)
 	, memLimit_(0)
-	, id_(id)
-	, shuffle_(0)
-	, initPost_(0)
+	, id_(0)
+	, units_(0)
 	, lastSimplify_(0)
-	, ccInfo_(Constraint_t::learnt_conflict)
-	, lbdTime_(0) {
+	, rootLevel_(0)
+	, btLevel_(0)
+	, lbdTime_(0)
+	, shuffle_(false) {
 	Var sentVar = assign_.addVar();
 	assign_.setValue(sentVar, value_true);
 	markSeen(sentVar);
-	setMemLimit(0);
+	setMemLimit( 16384 ); // 16 GB
 }
 
 Solver::~Solver() {
@@ -173,21 +232,18 @@ void Solver::freeMem() {
 SatPreprocessor* Solver::satPrepro() const { return shared_->satPrepro.get(); }
 
 void Solver::reset() {
-	SharedContext* myCtx = shared_;
-	uint32         myId  = id_;
+	// hopefully, no one derived from this class...
 	this->~Solver();
-	new (this) Solver(myCtx, myId);
+	new (this) Solver();
 }
 
 void Solver::setMemLimit(uint32 learntLimitInMB) {
-	if (learntLimitInMB) {
-		memLimit_   = learntLimitInMB;
-		memLimit_ <<= 20;
-	}
-	else { memLimit_ = INT64_MAX; }
+	memLimit_   = learntLimitInMB;
+	memLimit_ <<= 20;
 }
 
-void Solver::startInit(uint32 numConsGuess) {
+void Solver::startInit(SharedContext* ctx, uint32 numConsGuess) {
+	shared_ = ctx;
 	assert(numVars() <= shared_->numVars());
 	assign_.resize(shared_->numVars() + 1);
 	watches_.resize(assign_.numVars()<<1);
@@ -195,61 +251,39 @@ void Solver::startInit(uint32 numConsGuess) {
 	assign_.trail.reserve(numVars());
 	constraints_.reserve(numConsGuess/2);
 	levels_.reserve(25);
-	if (smallAlloc_ == 0) { 
-		smallAlloc_ = new SmallClauseAlloc(); 
-	}
+	if (smallAlloc_ == 0) { smallAlloc_ = new SmallClauseAlloc(); }
 	if (undoHead_ == 0)   {
 		for (uint32 i = 0; i != 25; ++i) { 
 			undoFree(new ConstraintDB(10)); 
 		}
 	}
-	strategy = shared_->configuration()->solver(id());
-	if (heuristic_.get() == 0) {
-		heuristic_.reset(shared_->configuration()->heuristic(id()));
+	if (strategy_.compress == 0) { strategy_.compress = UINT32_MAX; }
+	if (heuristic_.get() == 0)   {
+		if (SolverStrategies::heuFactory_s == 0) { strategy_.heuId = 0; }
+		if (strategy_.heuId == 0) { heuristic_.reset(new SelectFirst()); }
+		else                      { heuristic_.reset(strategy_.heuFactory_s(strategy_)); }
 	}
-	if (memLimit_ == INT64_MAX) {
-		setMemLimit(strategy.memLimit);
-	}
-	if (!popRootLevel(rootLevel())) { return; }
-	post_.disable(); // disable post propagators during setup
-	initPost_ = 0;   // defer calls to PostPropagator::init()
 	heuristic_->startInit(*this);
+	// disable any funky post propagators during setup
+	post_.disableFunky();
 }
 
-bool Solver::preparePost() {
-	if (hasConflict()) { return false; }
-	if (initPost_ == 0){
-		initPost_ = 1;
-		for (PostPropagator* x = post_.head(), *t; (t = x) != 0; ) {
-			x = x->next;
-			if (!t->init(*this)) { return false; }
-		}
-	}
-	return shared_->configuration()->addPost(*this);
-}
-bool Solver::hasPost(uint32 prio) const {
-	for (PostPropagator* x = post_.head(); x; x = x->next) {
-		uint32 xp = x->priority();
-		if (xp >= prio) { return xp == prio; }
-	}
-	return false;
-}
 bool Solver::endInit() {
-	if (hasConflict()) { return false; }
+	if (!propagate()) { return false; }
 	heuristic_->endInit(*this);
-	if (strategy.signFix) {
+	if (strategy_.signFix) {
 		for (Var v = 1; v <= numVars(); ++v) {
-			Literal x = DecisionHeuristic::selectLiteral(*this, v, 0);
-			setPref(v, ValueSet::user_value, x.sign() ? value_false : value_true);
+			if (savedValue(v) != value_free) { initPrefValue(v, valSign(savedValue(v))); }
+			else                             { initPrefValue(v, 1 + defaultLiteral(v).sign()); }
 		}
 	}
-	post_.enable(); // enable all post propagators
-	return propagate() && simplify();
-}
-
-void Solver::setEnumerationConstraint(Constraint* c) {
-	if (enum_) enum_->destroy(this, true);
-	enum_ = c;
+	// enable funky post propagators and
+	// force initial propagation
+	PostPropagator* ext = post_.enableFunky();
+	if (ext && (!post_.init(*this, ext) || !propagate())) {
+		return false;
+	}
+	return simplify();
 }
 
 void Solver::add(Constraint* c) {
@@ -286,33 +320,13 @@ uint32 Solver::numConstraints() const {
 		+ (shared_ ? shared_->numBinary()+shared_->numTernary() : 0);
 }
 
-bool Solver::pushRoot(const LitVec& path) {
-	stats.addPath(path.size());
-	// make sure we are on the current root level
-	undoUntil(0, true);
-	if (hasConflict() || !propagate() || !simplify()) { return false; }
-	// add path
-	for (LitVec::size_type i = 0, end = path.size(); i != end; ++i) {
-		Literal p = path[i];
-		if (value(p.var()) == value_free) {
-			assume(p); --stats.choices;
-			// increase root level - assumption can't be undone during search
-			pushRootLevel();
-			if (!propagate())  return false;
-		}
-		else if (isFalse(p)) return false;
-	}
-	ccInfo_.setActivity(1);
-	return true;
-}
-
 bool Solver::popRootLevel(uint32 i)  {
 	clearStopConflict();
-	levels_.root      -= std::min(i, rootLevel());
-	levels_.backtrack  = rootLevel();
-	impliedLits_.front = 0;
+	if (i > rootLevel_) i = rootLevel_;
+	rootLevel_ = btLevel_ = rootLevel_ - i;
+	impliedLits_.front    = 0;
 	// go back to new root level and re-assert still implied literals
-	undoUntil(rootLevel(), true);
+	undoUntil(rootLevel_, true);
 	if (!isTrue(sharedContext()->tagLiteral())) {
 		removeConditional();
 	}
@@ -325,13 +339,14 @@ bool Solver::clearAssumptions()  {
 }
 
 void Solver::clearStopConflict() {
-	if (hasStopConflict()) {
-		levels_.root = conflict_[1].asUint();
-		assign_.front= conflict_[2].asUint();
+	if (hasConflict() && hasStopConflict()) {
+		rootLevel_    = conflict_[1].asUint();
+		assign_.front = conflict_[2].asUint();
 		conflict_.clear();
 	}
 }
 
+bool Solver::hasStopConflict() const { return conflict_[0] == negLit(0); }
 void Solver::setStopConflict() {
 	if (!hasConflict()) {
 		// we use the nogood {FALSE} to represent the unrecoverable conflict -
@@ -339,7 +354,7 @@ void Solver::setStopConflict() {
 		// TRUE is always true in every solver
 		conflict_.push_back(negLit(0));
 		// remember the current root-level
-		conflict_.push_back(Literal::fromRep(rootLevel()));
+		conflict_.push_back(Literal::fromRep(rootLevel_));
 		// remember the current propagation queue
 		conflict_.push_back(Literal::fromRep(assign_.front));
 	}
@@ -353,7 +368,7 @@ void Solver::updateGuidingPath(LitVec& gpOut, LitVec::size_type& start, uint32& 
 		start = shared_->topLevelSize();
 	}
 	const LitVec& tr = assign_.trail;
-	LitVec::size_type end = rootLevel() == decisionLevel() ? tr.size() : levels_[rootLevel()].trailPos;
+	LitVec::size_type end = rootLevel_ == decisionLevel() ? tr.size() : levels_[rootLevel_].trailPos;
 	for (LitVec::size_type i = start; i < end; ++i) {
 		if (reason(tr[i]).isNull()) {
 			gpOut.push_back(tr[i]);
@@ -362,7 +377,7 @@ void Solver::updateGuidingPath(LitVec& gpOut, LitVec::size_type& start, uint32& 
 	start = end;
 	uint32 implLits = 0;
 	for (ImpliedList::iterator it = impliedLits_.begin(); it != impliedLits_.end(); ++it) {
-		if (it->level <= rootLevel() && ++implLits > implied) {
+		if (it->level <= rootLevel_ && ++implLits > implied) {
 			gpOut.push_back(it->lit);
 		}
 	}
@@ -492,27 +507,26 @@ bool Solver::simplifySAT() {
 	}
 	lastSimplify_ = assign_.front;
 	if (shuffle_) {
-		std::random_shuffle(constraints_.begin(), constraints_.end(), rng());
-		std::random_shuffle(learnts_.begin(), learnts_.end(), rng());
+		std::random_shuffle(constraints_.begin(), constraints_.end(), strategies().rng);
+		std::random_shuffle(learnts_.begin(), learnts_.end(), strategies().rng);
 	}
 	simplifyDB(constraints_);
 	simplifyDB(learnts_);
-	post_.simplify(*this, shuffle_ != 0);
-	if (enum_ && enum_->simplify(*this, shuffle_ != 0)) {
+	post_.simplify(*this, shuffle_);
+	if (enum_ && enum_->simplify(*this, shuffle_)) {
 		enum_->destroy(this, false);
 		enum_ = 0;
 	}
-	shuffle_ = 0;
+	shuffle_ = false;
 	return true;
 }
 
 void Solver::simplifyDB(ConstraintDB& db) {
 	ConstraintDB::size_type i, j, end = db.size();
-	bool shuffle = shuffle_ != 0;
 	for (i = j = 0; i != end; ++i) {
 		Constraint* c = db[i];
-		if (c->simplify(*this, shuffle)) { c->destroy(this, false); }
-		else                             { db[j++] = c;  }
+		if (c->simplify(*this, shuffle_)) { c->destroy(this, false); }
+		else                              { db[j++] = c;  }
 	}
 	db.erase(db.begin()+j, db.end());
 }
@@ -532,13 +546,15 @@ void Solver::simplifyDB(ConstraintDB& db) {
 void Solver::simplifyShort(Literal p) {
 	releaseVec(watches_[p.index()]);
 	releaseVec(watches_[(~p).index()]);
-	shared_->simplify(*this, p);
+	if (!shared_->isShared()) {
+		shared_->shortImplications().removeTrue(*this, p);
+	}
 }
 
 void Solver::setConflict(Literal p, const Antecedent& a, uint32 data) {
 	++stats.conflicts;
 	conflict_.push_back(~p);
-	if (strategy.search != SolverStrategies::no_learning && !a.isNull()) {
+	if (strategy_.search != SolverStrategies::no_learning && !a.isNull()) {
 		if (data == UINT32_MAX) {
 			a.reason(*this, p, conflict_);
 		}
@@ -569,7 +585,8 @@ bool Solver::propagate() {
 		assert(queueSize() == 0);
 		return true;
 	}
-	cancelPropagation();
+	assign_.qReset();
+	post_.reset();
 	return false;
 }
 
@@ -592,6 +609,14 @@ Constraint::PropResult ClauseHead::propagate(Solver& s, Literal p, uint32&) {
 		return Constraint::PropResult(true, false);
 	}	
 	return PropResult(s.force(head_[1^wLit], this), true);
+}
+
+bool Solver::propagateUnits() {
+	assert(decisionLevel() == 0 && queueSize() == 0);
+	assign_.front = units_;
+	units_        = (uint32)assign_.trail.size();
+	while (!assign_.qEmpty()) { markSeen(assign_.qPop().var()); } 
+	return true;
 }
 
 bool Solver::unitPropagate() {
@@ -642,32 +667,32 @@ bool Solver::unitPropagate() {
 			wl.shrink_right(j);
 		}
 	}
-	return DL || assign_.markUnits();
+	return DL || assign_.front == units_ || propagateUnits();
 }
 
 bool Solver::test(Literal p, PostPropagator* c) {
 	assert(value(p.var()) == value_free && !hasConflict());
 	assume(p); --stats.choices;
-	uint32 pLevel = decisionLevel();
-	freezeLevel(pLevel); // can't split-off this level
+	freezeLevel(decisionLevel()); // can't split-off this level
 	if (propagateUntil(c)) {
-		assert(decisionLevel() == pLevel && "Invalid PostPropagators");
+		assert(decision(decisionLevel()) == p);
 		if (c) c->undoLevel(*this);
-		undoUntil(pLevel-1);
+		undoUntil(decisionLevel()-1);
 		return true;
 	}
-	assert(decisionLevel() == pLevel && "Invalid PostPropagators");
-	unfreezeLevel(pLevel);
-	cancelPropagation();
+	unfreezeLevel(decisionLevel());
+	assert(decision(decisionLevel()) == p);
+	assign_.qReset();
+	post_.reset();
 	return false;
 }
 
 bool Solver::resolveConflict() {
 	assert(hasConflict());
-	if (decisionLevel() > rootLevel()) {
-		if (decisionLevel() != backtrackLevel() && strategy.search != SolverStrategies::no_learning) {
+	if (decisionLevel() > rootLevel_) {
+		if (decisionLevel() != btLevel_ && strategy_.search != SolverStrategies::no_learning) {
 			uint32 uipLevel = analyzeConflict();
-			stats.updateJumps(decisionLevel(), uipLevel, backtrackLevel(), ccInfo_.lbd());
+			stats.updateJumps(decisionLevel(), uipLevel, btLevel_, ccInfo_.lbd());
 			undoUntil( uipLevel );
 			return ClauseCreator::create(*this, cc_, ccInfo_);
 		}
@@ -681,10 +706,10 @@ bool Solver::resolveConflict() {
 bool Solver::backtrack() {
 	Literal lastChoiceInverted;
 	do {
-		if (decisionLevel() == rootLevel()) return false;
+		if (decisionLevel() == rootLevel_) return false;
 		lastChoiceInverted = ~decision(decisionLevel());
-		levels_.backtrack = decisionLevel() - 1;
-		undoUntil(backtrackLevel(), true);
+		btLevel_ = decisionLevel() - 1;
+		undoUntil(btLevel_, true);
 	} while (hasConflict() || !force(lastChoiceInverted, 0));
 	return true;
 }
@@ -707,11 +732,11 @@ bool ImpliedList::assign(Solver& s) {
 }
 
 void Solver::undoUntil(uint32 level) {
-	assert(backtrackLevel() >= rootLevel());
-	level      = std::max( level, backtrackLevel() );
+	assert(btLevel_ >= rootLevel_);
+	level      = std::max( level, btLevel_ );
 	if (level >= decisionLevel()) return;
 	uint32 num = decisionLevel() - level;
-	bool sp    = strategy.saveProgress > 0 && ((uint32)strategy.saveProgress) <= num;
+	bool sp    = strategy_.saveProgress > 0 && ((uint32)strategy_.saveProgress) <= num;
 	bool ok    = conflict_.empty() && levels_.back().freeze == 0;
 	conflict_.clear();
 	heuristic_->undoUntil( *this, levels_[level].trailPos);
@@ -754,6 +779,7 @@ uint32 Solver::estimateBCP(const Literal& p, int rd) const {
 
 uint32 Solver::inDegree(WeightLitVec& out) {
 	if (decisionLevel() == 0) { return 1; }
+	assert(!hasConflict());
 	out.reserve((numAssignedVars()-levelStart(1))/10);
 	uint32 maxIn  = 1;
 	uint32 i      = assign_.trail.size(), stop = levelStart(1);
@@ -763,7 +789,6 @@ uint32 Solver::inDegree(WeightLitVec& out) {
 		xAnte         = assign_.reason(x.var());
 		uint32  xIn   = 0;
 		if (!xAnte.isNull() && xAnte.type() != Antecedent::binary_constraint) {
-			conflict_.clear();
 			xAnte.reason(*this, x, conflict_);
 			for (LitVec::const_iterator it = conflict_.begin(); it != conflict_.end(); ++it) {
 				xIn += level(it->var()) != xLev;
@@ -772,8 +797,10 @@ uint32 Solver::inDegree(WeightLitVec& out) {
 				out.push_back(WeightLiteral(x, xIn));
 				maxIn     = std::max(xIn, maxIn);
 			}
+			conflict_.clear();
 		}
 	}
+	assert(!hasConflict());
 	return maxIn;
 }
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -825,7 +852,7 @@ uint32 Solver::analyzeConflict() {
 	Literal p;                  // literal to be resolved out next
 	cc_.assign(1, p);           // will later be replaced with asserting literal
 	Antecedent lhs, rhs, last;  // resolve operands
-	const bool doOtfs = strategy.otfs > 0;
+	const bool doOtfs = strategy_.otfs > 0;
 	for (bumpAct_.clear();;) {
 		uint32 lhsSize = resSize;
 		uint32 rhsSize = 0;
@@ -872,7 +899,7 @@ uint32 Solver::analyzeConflict() {
 	cc_[0] = ~p; // store the 1-UIP
 	assert(decisionLevel() == level(cc_[0].var()));
 	ClauseHead* lastRes = 0;
-	if (strategy.otfs > 1 || !lhs.isNull()) {
+	if (strategy_.otfs > 1 || !lhs.isNull()) {
 		if (!lhs.isNull()) { 
 			lastRes = clause(lhs);
 		}
@@ -880,9 +907,10 @@ uint32 Solver::analyzeConflict() {
 			lastRes = clause(last);
 		}
 	}
-	if (strategy.bumpVarAct && reason(p).learnt()) {
+	if (strategy_.bumpVarAct && reason(p).learnt()) {
 		bumpAct_.push_back(WeightLiteral(p, static_cast<LearntConstraint*>(reason(p).constraint())->activity().lbd()));
 	}
+	ccInfo_ = ClauseInfo(Constraint_t::learnt_conflict);
 	return simplifyConflictClause(cc_, ccInfo_, lastRes);
 }
 
@@ -937,16 +965,16 @@ ClauseHead* Solver::otfsRemove(ClauseHead* c, const LitVec* newC) {
 uint32 Solver::simplifyConflictClause(LitVec& cc, ClauseInfo& info, ClauseHead* rhs) {
 	// 1. remove redundant literals from conflict clause
 	temp_.clear();
-	if (!ccMin_ && strategy.strRecursive) { ccMin_ = new CCMinRecursive; }
-	uint32 onAssert = ccMinimize(cc, temp_, strategy.ccMinAntes, ccMin_);
+	if (!ccMin_ && strategy_.strRecursive) { ccMin_ = new CCMinRecursive; }
+	uint32 onAssert = ccMinimize(cc, temp_, strategy_.ccMinAntes, ccMin_);
 	uint32 jl       = cc.size() > 1 ? level(cc[1].var()) : 0;
 	// clear seen flags of removed literals - keep levels marked
 	for (LitVec::size_type x = 0, stop = temp_.size(); x != stop; ++x) {
 		clearSeen(temp_[x].var());
 	}
 	// 2. check for inverse arcs
-	if (onAssert == 1 && strategy.reverseArcs > 0) {
-		uint32 maxN = (uint32)strategy.reverseArcs;
+	if (onAssert == 1 && strategy_.reverseArcs > 0) {
+		uint32 maxN = (uint32)strategy_.reverseArcs;
 		if      (maxN > 2) maxN = UINT32_MAX;
 		else if (maxN > 1) maxN = static_cast<uint32>(cc.size() / 2);
 		markSeen(cc[0].var());
@@ -1143,10 +1171,9 @@ uint32 Solver::finalizeConflictClause(LitVec& cc, ClauseInfo& info) {
 	uint32  assertLevel = 0;
 	uint32  assertPos   = 1;
 	Literal tagLit      = ~sharedContext()->tagLiteral();
-	bool    tagged      = false;
 	for (LitVec::size_type i = 1; i != cc.size(); ++i) {
 		clearSeen(cc[i].var());
-		if (cc[i] == tagLit) { tagged = true; }
+		if (cc[i] == tagLit) { info.setTagged(true); }
 		if ( (varLevel = level(cc[i].var())) > assertLevel ) {
 			assertLevel = varLevel;
 			assertPos   = static_cast<uint32>(i);
@@ -1157,9 +1184,8 @@ uint32 Solver::finalizeConflictClause(LitVec& cc, ClauseInfo& info) {
 		}
 	}
 	if (assertPos != 1) { std::swap(cc[1], cc[assertPos]); }
-	info.setActivity(ccInfo_.activity());
 	info.setLbd(lbd);
-	info.setTagged(tagged);
+	info.setActivity(static_cast<uint32>(1+stats.restarts));
 	return assertLevel;
 }
 
@@ -1177,13 +1203,13 @@ bool Constraint::minimize(Solver& s, Literal p, CCMinRecursive* rec) {
 
 // Selects next branching literal
 bool Solver::decideNextBranch(double f) { 
-	if (f <= 0.0 || rng().drand() >= f || numFreeVars() == 0) {
+	if (f <= 0.0 || strategy_.rng.drand() >= f || numFreeVars() == 0) {
 		return heuristic_->select(*this);
 	}
 	// select randomly
 	Literal choice;
 	uint32 maxVar = numVars() + 1; 
-	for (uint32 v = rng().irand(maxVar);;) {
+	for (uint32 v = strategy_.rng.irand(maxVar);;) {
 		if (value(v) == value_free) {
 			choice    = DecisionHeuristic::selectLiteral(*this, v, 0);
 			break;
@@ -1313,6 +1339,7 @@ Solver::DBInfo Solver::reduceSortInPlace(uint32 maxR, const CmpScore& sc, bool p
 		}
 	}
 	else {
+		// reorder db s.th first maxR constraints are a heap of most inactive
 		ConstraintDB::iterator hBeg = learnts_.begin();
 		ConstraintDB::iterator hEnd = learnts_.begin();
 		for (ConstraintDB::iterator it = learnts_.begin(), end = learnts_.end(); it != end; ++it) {
@@ -1381,9 +1408,9 @@ ValueRep Solver::search(SearchLimits& limit, double rf) {
 			if (conflicts) {
 				for (conflicts = 1; resolveConflict() && !propagate(); ) { ++conflicts; }
 				limit.conflicts -= conflicts < limit.conflicts ? conflicts : limit.conflicts;
-				if (local && updateBranch(conflicts) >= local)              { limit.local = 0; }
-				if (hasConflict() || (decisionLevel() == 0 && !simplify())) { return value_false; }
-				if ((limit.reached() || learntLimit(limit))&&numFreeVars()) { return value_free;  }
+				if (local && updateBranch(conflicts) >= local)                  { limit.local = 0; }
+				if (hasConflict() || (decisionLevel() == 0 && !simplify()))     { return value_false; }
+				if ((limit.reached(stats) || learntLimit(limit))&&numFreeVars()){ return value_free;  }
 			}
 			if (decideNextBranch(rf)) { conflicts = !propagate(); }
 			else                      { break; }

@@ -46,6 +46,7 @@ double ProcessTime::getTime() {
 	return (user.asUint + system.asUint) / double(TICKS_PER_SEC);
 }
 
+#if WITH_THREADS
 double ThreadTime::getTime() {
 	FILETIME ignoreStart, ignoreExit;
 	union Convert {
@@ -55,6 +56,7 @@ double ThreadTime::getTime() {
 	GetThreadTimes(GetCurrentThread(), &ignoreStart, &ignoreExit, &user.time, &system.time);
 	return (user.asUint + system.asUint) / double(TICKS_PER_SEC);
 }
+#endif
 
 }
 #else
@@ -77,6 +79,7 @@ double ProcessTime::getTime() {
 	return (nowTimes.tms_utime + nowTimes.tms_stime) / double(sysconf(_SC_CLK_TCK));
 }
 
+#if WITH_THREADS
 double ThreadTime::getTime() {
 #if defined(RUSAGE_THREAD)
 	int who = RUSAGE_THREAD;
@@ -89,6 +92,7 @@ double ThreadTime::getTime() {
 	return std::numeric_limits<double>::quiet_NaN();
 #endif
 }
+#endif
 
 }
 #endif

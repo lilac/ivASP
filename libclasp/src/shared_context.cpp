@@ -21,7 +21,6 @@
 #include <clasp/solver.h>
 #include <clasp/clause.h>
 #include <clasp/enumerator.h>
-#include <clasp/dependency_graph.h>
 #if WITH_THREADS
 #include <clasp/util/thread.h>
 #endif
@@ -198,7 +197,7 @@ void ShortImplicationsGraph::remove_tern(ImplicationList& w, Literal p) {
 	w.try_shrink();	
 }
 
-void ShortImplicationsGraph::removeTrue(const Solver& s, Literal p) {
+void ShortImplicationsGraph::removeTrue(Solver& s, Literal p) {
 	typedef ImplicationList SWL;
 	SWL& negPList = graph_[(~p).index()];
 	SWL& pList    = graph_[ (p).index()];
@@ -268,202 +267,37 @@ bool ShortImplicationsGraph::propagateBin(Assignment& out, Literal p, uint32 lev
 /////////////////////////////////////////////////////////////////////////////////////////
 // SatPreprocessor
 /////////////////////////////////////////////////////////////////////////////////////////
-SatPreprocessor::~SatPreprocessor() {
-	for (ClauseList::size_type i = 0; i != clauses_.size(); ++i) {
-		if (clauses_[i]) { clauses_[i]->destroy(); }
-	}
-	ClauseList().swap(clauses_);
-	for (Clause* r = elimTop_; r;) {
-		Clause* t = r;
-		 r = r->next();
-		 t->destroy();
-	}
-	elimTop_ = 0;
-}
-void SatPreprocessor::doCleanUp() {
-	for (ClauseList::size_type i = 0; i != clauses_.size(); ++i) {
-		if (clauses_[i]) { clauses_[i]->destroy(); }
-	}
-	ClauseList().swap(clauses_);
-}
-void SatPreprocessor::cleanUp() {
-	doCleanUp();                  // <- virtual dispatch never calls a pure virtual
-	SatPreprocessor::doCleanUp(); // <- call our version
-}
+SatPreprocessor::~SatPreprocessor() {}
 void SatPreprocessor::reportProgress(const PreprocessEvent& e) { ctx_->reportProgress(e); }
-bool SatPreprocessor::addClause(const LitVec& cl) {
-	if (cl.size() > 1) {
-		clauses_.push_back( Clause::newClause( cl ) );
-	}
-	else if (cl.size() == 1) {
-		units_.push_back(cl[0]);
-	}
-	else {
-		return false;
-	}
-	return true;
-}	
-bool SatPreprocessor::preprocess(SharedContext& ctx, bool enumerateModels) {
-	ctx_ = &ctx;
-	Solver* s = ctx_->master();
-	struct OnExit {
-		SatPreprocessor* self;
-		~OnExit() { if (self) self->cleanUp(); }
-	} onExit; onExit.self = this;
-	ConstraintType unit = Constraint_t::static_constraint;
-	for (LitVec::const_iterator it = units_.begin(), end = units_.end(); it != end; ++it) {
-		if (!s->addUnary(*it, unit)) return false;
-	}
-	units_.clear();
-	// skip preprocessing if other constraints are UNSAT
-	if (!s->propagate()) return false;
-	// 1. remove SAT-clauses, strengthen clauses w.r.t false literals, attach
-	if (initPreprocess(enumerateModels)) {
-		ClauseList::size_type j = 0; 
-		for (ClauseList::size_type i = 0; i != clauses_.size(); ++i) {
-			Clause* c   = clauses_[i]; assert(c);
-			clauses_[i] = 0;
-			c->simplify(*s);
-			if (s->value((*c)[0].var()) == value_free) {
-				clauses_[j++] = c; 
-			}
-			else if (c) {
-				Literal x = (*c)[0];
-				c->destroy(); 
-				if (!s->addUnary(x, unit)) { return false; }
-			}
-		}
-		clauses_.erase(clauses_.begin()+j, clauses_.end());
-		// 2. run preprocessing
-		if (!s->propagate() || !doPreprocess()) return false;
-	}
-	// simplify other constraints w.r.t any newly derived top-level facts
-	if (!s->simplify()) return false;
-	// 3. move preprocessed clauses to ctx
-	ClauseCreator nc(s);
-	for (ClauseList::size_type i = 0; i != clauses_.size(); ++i) {
-		if (clauses_[i]) {
-			Clause& c = *clauses_[i];
-			nc.start();
-			for (uint32 x = 0; x != c.size(); ++x) {  nc.add(c[x]);  }
-			c.destroy();
-			nc.end();
-		}
-	}
-	ClauseList().swap(clauses_);
-	return true;
-}
-void SatPreprocessor::extendModel(Assignment& m, LitVec& open) {
-	if (!open.empty()) {
-		// flip last unconstraint variable to get "next" model
-		open.back() = ~open.back();
-	}
-	doExtendModel(m, open);
-	// remove unconstraint vars already flipped
-	while (!open.empty() && open.back().sign()) {
-		open.pop_back();
-	}
-}
-SatPreprocessor::Clause* SatPreprocessor::Clause::newClause(const LitVec& lits) {
-	void* mem = ::operator new( sizeof(Clause) + (lits.size()-1)*sizeof(Literal) );
-	return new (mem) Clause(lits);
-}
-SatPreprocessor::Clause::Clause(const LitVec& lits) : size_((uint32)lits.size()), inQ_(0), marked_(0) {
-	std::memcpy(lits_, &lits[0], lits.size()*sizeof(Literal));
-}
-void SatPreprocessor::Clause::strengthen(Literal p) {
-	uint64 a = 0;
-	uint32 i, end;
-	for (i   = 0; lits_[i] != p; ++i) { a |= Clause::abstractLit(lits_[i]); }
-	for (end = size_-1; i < end; ++i) { lits_[i] = lits_[i+1]; a |= Clause::abstractLit(lits_[i]); }
-	--size_;
-	data_.abstr = a;
-}
-void SatPreprocessor::Clause::simplify(Solver& s) {
-	uint32 i;
-	for (i = 0; i != size_ && s.value(lits_[i].var()) == value_free; ++i) {;}
-	if      (i == size_)        { return; }
-	else if (s.isTrue(lits_[i])){ std::swap(lits_[i], lits_[0]); return;  }
-	uint32 j = i++;
-	for (; i != size_; ++i) {
-		if (s.isTrue(lits_[i]))   { std::swap(lits_[i], lits_[0]); return;  }
-		if (!s.isFalse(lits_[i])) { lits_[j++] = lits_[i]; }
-	}
-	size_ = j;
-}
-void SatPreprocessor::Clause::destroy() {
-	void* mem = this;
-	this->~Clause();
-	::operator delete(mem);
-}
 /////////////////////////////////////////////////////////////////////////////////////////
 // SharedContext
 /////////////////////////////////////////////////////////////////////////////////////////
-static DefaultConfiguration config_def_s;
-SharedContext::SharedContext(const ContextOptions& opts) 
-	: solve(0), symTabPtr_(new SharedSymTab()), accu_(0), progress_(0), lastInit_(0), lastTopLevel_(0), opts_(opts) {
+SharedContext::SharedContext(PhysicalSharing x, bool learnImp) 
+	: symTabPtr_(new SharedSymTab()), master_(new Solver), progress_(0), distributor_(0), lastInit_(0), lastTopLevel_(0) {
+	std::memset(&share_, 0, sizeof(Share));
+	share_.count    = 1;
+	share_.physical = x;
+	share_.impl     = learnImp;
+	addVar(Var_t::atom_body_var);
+	problem_.vars = 0;
+	addEnumerator(0);
 	Antecedent::checkPlatformAssumptions();
-	init(&config_def_s);
-	
+	static_assert(sizeof(Share) == sizeof(uint64), "Unsupported Padding");
 }
 
 SharedContext::SharedContext(const SharedContext& rhs,  InitMode) 
-	: solve(0), accu_(0), progress_(0), lastInit_(0), lastTopLevel_(0)
-	, opts_(rhs.opts_), share_(rhs.share_) {
+	: master_(new Solver), progress_(0), distributor_(0), lastInit_(0), lastTopLevel_(0)
+	, share_(rhs.share_) {
 	share_.count = 1;
 	symTabPtr_   = rhs.symTabPtr_;
 	++symTabPtr_->refs;
-	init(rhs.configuration());
-}
-
-void SharedContext::init(Configuration* c) {
-	Var sentinel  = addVar(Var_t::atom_var); // sentinel always present
-	setFrozen(sentinel, true);
+	addVar(Var_t::atom_body_var);
 	problem_.vars = 0;
-	config_       = c;
-	config_.release();
-	addSolver();
 	addEnumerator(0);
 }
 
-void SharedContext::enableStats(uint32 lev) {
-	if (lev) {
-		SolveStats& stats = master()->stats;
-		if (!accu_)                                  { accu_ = new SolveStats(); }
-		else                                         { accu_->reset(); }
-		if (!stats.extra)                            { stats.enableExtended();}
-		if (lev > 1 && !stats.jumps)                 { stats.enableJump();    }
-		if (sccGraph.get() && sccGraph->numNonHcfs()){ sccGraph->enableStats(lev); }
-		for (uint32 i = 0; i != solvers_.size(); ++i){ solvers_[i]->stats.reset(); }
-		accu_->enableStats(stats);
-	}
-}
-
-SolveStats* SharedContext::accuStats(bool accu) const {
-	if (accu_ && accu) {
-		for (uint32 i = 0; i != solvers_.size(); ++i) {
-			accu_->accu(solvers_[i]->stats);
-		}
-	}
-	return accu_;
-}
-void SharedContext::accuStats(const SolveStats& s) const {
-	if (accu_) { accu_->accu(s); }
-}
-
-void SharedContext::copyVars(SharedContext& other) {
-	problem_.vars            = other.problem_.vars;
-	problem_.vars_eliminated = other.problem_.vars_eliminated;
-	problem_.vars_frozen     = other.problem_.vars_frozen;
-	varInfo_                 = other.varInfo_;
-	if (&symTab() != &other.symTab()) {
-		other.symTab().copyTo(symTab());
-	}
-}
-
 SharedContext::~SharedContext() {
-	while (!solvers_.empty()) { delete solvers_.back(); solvers_.pop_back(); }
-	delete accu_;
+	delete master_;
 	if (--symTabPtr_->refs == 0) delete symTabPtr_;
 }
 
@@ -472,47 +306,21 @@ void SharedContext::reset() {
 	new (this) SharedContext();	
 }
 
-void SharedContext::concurrency(uint32 n) {
-	if (n <= 1) { share_.count = 1; opts_.shareMode = 0; }
-	else        { share_.count = n; solvers_.reserve(n); }
-	while (solvers_.size() > share_.count) {
-		delete solvers_.back(); 
-		solvers_.pop_back();
-	}
-}
-
-Solver& SharedContext::addSolver() {
-	uint32 id    = (uint32)solvers_.size();
-	share_.count = std::max(share_.count, id + 1);
-	Solver* s    = new Solver(this, id);
-	solvers_.push_back(s);
-	return *s;
-}
-
-void SharedContext::setConfiguration(Configuration* c, bool own) {
-	if (config_.get() != c) {
-		if (c == 0) { c = &config_def_s; own = false; }
-		config_ = c;
-		if (!own) config_.release();
-		config_->init(*this);
-	}
-	else if (own != config_.is_owner()) {
-		if (own) config_.acquire();
-		else     config_.release();
-	}
+void SharedContext::setSolvers(uint32 n) {
+	if (n <= 1) { share_.count = 1; share_.physical = 0; }
+	else        { share_.count = n; }
 }
 
 void SharedContext::reserveVars(uint32 varGuess) {
-	varInfo_.reserve(varGuess + 1);
+	varInfo_.reserve(varGuess);
 }
 
 Var SharedContext::addVar(VarType t, bool eq) {
-	VarInfo nv;
-	if (t == Var_t::body_var) { nv.set(VarInfo::BODY); }
-	if (eq)                   { nv.set(VarInfo::EQ);   }
-	varInfo_.push_back(nv);
+	Var v = varInfo_.numVars();
+	varInfo_.add(t == Var_t::body_var);
+	if (eq) varInfo_.toggle(v, VarInfo::EQ);
 	++problem_.vars;
-	return numVars();
+	return v;
 }
 
 void SharedContext::requestTagLiteral() {
@@ -535,21 +343,17 @@ void SharedContext::requestData(Var v) {
 
 void SharedContext::setFrozen(Var v, bool b) {
 	assert(validVar(v)); 
-	if (v && b != varInfo_[v].has(VarInfo::FROZEN)) {
-		varInfo_[v].toggle(VarInfo::FROZEN);
+	if (v && b != varInfo_.isSet(v, VarInfo::FROZEN)) {
+		varInfo_.toggle(v, VarInfo::FROZEN);
 		b ? ++problem_.vars_frozen : --problem_.vars_frozen;
 	}
 }
-bool SharedContext::eliminated(Var v) const {
-	assert(validVar(v)); 
-	return !master()->assign_.valid(v);
-}
-
 void SharedContext::eliminate(Var v) {
 	assert(validVar(v) && !frozen() && master()->decisionLevel() == 0); 
 	if (!eliminated(v)) {
+		varInfo_.toggle(v, VarInfo::ELIM);
 		++problem_.vars_eliminated;
-		// eliminate var from assignment - no longer a decision variable!
+		// assign var to true - no longer a decision variable!
 		master()->assign_.eliminate(v);
 	}
 }
@@ -565,9 +369,12 @@ Solver& SharedContext::startAddConstraints(uint32 constraintGuess) {
 	}
 	btig_.resize((numVars()+1)<<1);
 	btig_.markShared(false);
-	master()->startInit(constraintGuess);
-	lastInit_ = master()->constraints_.size();
-	return *master();
+	if (satPrepro.get()) {
+		satPrepro->setContext(*this);
+	}
+	master_->startInit(this, constraintGuess);
+	lastInit_ = master_->constraints_.size();
+	return *master_;
 }
 
 void SharedContext::addEnumerator(Enumerator* en) {
@@ -579,50 +386,52 @@ bool SharedContext::addUnary(Literal p)      { return master()->addUnary(p, Cons
 void SharedContext::add(Constraint* c)       { return master()->add(c); }
 uint32 SharedContext::numConstraints() const { return numBinary() + numTernary() + master()->constraints_.size(); }
 
-bool SharedContext::endInit(bool attachAll) {
+bool SharedContext::endInit() {
 	assert(!frozen());
-	if (master()->hasConflict()) { return false; }
-	master()->setEnumerationConstraint(enumerator()->endInit(*this, concurrency()));
-	SatPrepro temp(satPrepro.release());
-	bool ok = master()->preparePost() && (!temp.get() || temp->preprocess(*this, enumerator()->enumerate())) && master()->endInit();
-	satPrepro.reset(temp.release());
-	if (!ok) {
-		master()->setEnumerationConstraint(0);
+	if (master()->hasConflict()) return false;
+	if (!master()->post_.init(*master())) {
 		return false;
 	}
-	btig_.markShared(concurrency() > 1);
-	lastTopLevel_               = master()->assign_.front;
+	struct Holder {
+		~Holder() { if (con) con->destroy(master, true); }
+		Solver*     master;
+		Constraint* con;
+	} enumC = { master(), enumerator()->endInit(*this, numSolvers()) };
+	if (satPrepro.get()) {
+		SatPrepro temp(satPrepro.release());
+		bool r = temp->preprocess(enumerator()->enumerate());
+		satPrepro.reset(temp.release());
+		if (!r) return false;
+	}
+	master_->setEnumerationConstraint(enumC.con);
+	enumC.con = 0;
+	if (!master()->endInit()) return false;
+	lastTopLevel_ = master()->units_;
+	btig_.markShared(numSolvers() > 1);
 	problem_.constraints        = master()->constraints_.size();
 	problem_.constraints_binary = btig_.numBinary();
 	problem_.constraints_ternary= btig_.numTernary();
-	problem_.size               = std::max(problem_.size, numConstraints());
 	share_.frozen = 1;
-	for (uint32 i = attachAll ? 1 : solvers_.size(); i != solvers_.size(); ++i) {
-		if (!attach(i)) { return false; }
-	}
 	return true;
 }
 
 bool SharedContext::attach(Solver& other) {
-	assert(frozen() && other.shared_ == this);
-	if (other.validVar(tag_.var())) {
-		if (!other.popRootLevel(other.rootLevel())){ return false; }
-		if (&other == master())                    { return true;  }
-	}
-	other.stats.enableStats(master()->stats);
+	assert(frozen());
+	if (other.sharedContext() == this) { return other.popRootLevel(other.rootLevel()); }
 	Var oldV = other.numVars();
-	// 1. clone vars & assignment
-	other.startInit(static_cast<uint32>(master()->constraints_.size()-lastInit_));
+	other.startInit(this, static_cast<uint32>(master_->constraints_.size()-lastInit_));
+	// 1. clone assignment
 	other.assign_.requestData(master()->assign_.numData());
 	LitVec::size_type prevTs = other.trail().size();
 	const LitVec& trail      = master()->trail();
 	Antecedent null;
-	for (LitVec::size_type i = other.assign_.front; i < trail.size(); ++i) {
+	for (LitVec::size_type i = other.units_; i < trail.size(); ++i) {
 		if (!other.force(trail[i], null)) {
 			return false;
 		}
+		other.markSeen(trail[i].var());
 	}
-	other.assign_.markUnits();
+	other.units_        = static_cast<uint32>(trail.size());
 	other.lastSimplify_ = other.constraints_.empty() ? trail.size() : prevTs;
 	if (satPrepro.get()) {
 		for (Var v = oldV+1; v <= other.numVars(); ++v) {
@@ -639,17 +448,19 @@ bool SharedContext::attach(Solver& other) {
 		}
 		if (other.hasConflict()) return false;
 	}
-	Constraint* c = master()->getEnumerationConstraint();
+	Constraint* c = master_->getEnumerationConstraint();
 	other.setEnumerationConstraint( c ? c->cloneAttach(other) : 0 );
 	// 3. endInit
-	return (other.preparePost() && other.endInit()) || (detach(other, false), false);
+	return (other.post_.init(other) && other.endInit())
+		|| (detach(other), false);
 }
 
-void SharedContext::detach(Solver& s, bool reset) {
-	assert(s.shared_ == this);
-	if (reset) { s.reset(); }
-	s.removeConditional();
-	s.setEnumerationConstraint(0);
+void SharedContext::detach(Solver& s) {
+	if (s.sharedContext() == this) {
+		s.popRootLevel(s.rootLevel());
+		s.setEnumerationConstraint(0);
+		if (&s != master()) s.shared_ = 0;
+	}
 }
 
 uint32 SharedContext::problemComplexity() const {
@@ -661,10 +472,10 @@ uint32 SharedContext::problemComplexity() const {
 }
 
 SharedLiterals* SharedContext::distribute(const Solver& s, const Literal* lits, uint32 size, const ClauseInfo& extra) const {
-	if (distributor.get() && !extra.tagged() && (size <= 3 || opts_.distribute(size, extra.lbd(), extra.type()))) {
+	if (distributor_.get() && !extra.tagged() && (size <= 3 || share_.distribute(size, extra.lbd(), extra.type()))) {
 		uint32 initialRefs = share_.count - (size <= Clause::MAX_SHORT_LEN || !physicalShare(extra.type()));
 		SharedLiterals* x  = SharedLiterals::newShareable(lits, size, extra.type(), initialRefs);
-		distributor->publish(s, x);
+		distributor_->publish(s, x);
 		const_cast<Solver&>(s).stats.addDistributed(extra.lbd(), extra.type());
 		return initialRefs == share_.count ? x : 0;
 	}
@@ -672,8 +483,8 @@ SharedLiterals* SharedContext::distribute(const Solver& s, const Literal* lits, 
 }
 
 uint32 SharedContext::receive(const Solver& target, SharedLiterals** out, uint32 maxOut) const {
-	if (distributor.get()) {
-		return distributor->receive(target, out, maxOut);
+	if (distributor_.get()) {
+		return distributor_->receive(target, out, maxOut);
 	}
 	return 0;
 }

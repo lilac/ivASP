@@ -26,7 +26,7 @@
 #endif
 
 #if !defined(CLASP_VERSION)
-#define CLASP_VERSION "2.2-TP (Rev. $Revision$)"
+#define CLASP_VERSION "2.1.3"
 #endif
 #if !defined(CLASP_LEGAL)
 #define CLASP_LEGAL \
@@ -45,11 +45,10 @@
 typedef Clasp::mt::ParallelSolveOptions SolveOptions;
 #else
 #include <clasp/solve_algorithms.h>
-#include <clasp/shared_context.h>
 namespace Clasp {
 struct SolveOptions {
 	SolveLimits   limit;  /**< Solve limit (disabled by default). */
-	void   createSolveObject(SharedContext& ctx) const { ctx.solve = new SolveAlgorithm(limit); }
+	void   createSolveObject(SolveAlgorithm*& out, SharedContext&, SolverConfig**) const { out = new SimpleSolve(limit); }
 	static uint32 supportedSolvers()   { return 1; }
 	static uint32 recommendedSolvers() { return 1; }
 };
@@ -74,68 +73,14 @@ struct SolveOptions {
  */
 namespace Clasp {
 
-class ClaspFacade;
-
-//! Interface for controling incremental solving.
-class IncrementalControl {
-public:
-	IncrementalControl();
-	virtual ~IncrementalControl(); 
-	//! Called before an incremental step is started.
-	virtual void initStep(ClaspFacade& f)  = 0;
-	//! Called after an incremental step finished.
-	/*!
-	 * \return
-	 *  - true to signal that solving should continue with next step
-	 *  - false to terminate the incremental solving loop
-	 */
-	virtual bool nextStep(ClaspFacade& f)  = 0;
-private:
-	IncrementalControl(const IncrementalControl&);
-	IncrementalControl& operator=(const IncrementalControl&);
-};
-
 /////////////////////////////////////////////////////////////////////////////////////////
-// Configuration
+// Parameter configuration
 /////////////////////////////////////////////////////////////////////////////////////////	
-namespace Heuristic {
-	enum Type { heu_berkmin = 0, heu_vsids = 1, heu_vmtf = 2, heu_unit = 3, heu_none = 4  };
-	inline bool        isLookback(uint32 type) { return type != heu_none && type != heu_unit; }
-	DecisionHeuristic* create(const SolverStrategies&, const SolveParams&);
-}
-//! Configuration object for configuring co-np tests of disjunctive programs.
-class TesterConfig : public UserConfiguration {
-public:
-	explicit TesterConfig(const SharedContext& generator);
-	// Base interface
-	DecisionHeuristic* heuristic(uint32)    const;
-	void               init(SharedContext&) const;
-	const SolverOpts&  solver(uint32 i)     const       { return solver_[i%solver_.size()]; }
-	const SearchOpts&  search(uint32 i)     const       { return search_[i%search_.size()]; }
-	Configuration*     tester()             const       { return 0; }
-	void               setConcurrency(uint32 num)       { concurrency_ = num; }
-	void               setSatPrepro(SatPreprocessor* p) { satPre_.reset(p); }
-	ContextOptions*    context()                        { return &ctx_; }
-	SolverOpts&        addSolver(uint32 i);
-	SearchOpts&        addSearch(uint32 i);
-	//
-	uint32             prepare();
-private:
-	typedef PodVector<SolverOpts>::type SolverVec;
-	typedef PodVector<SearchOpts>::type SearchVec;
-	SolverVec                      solver_;
-	SearchVec                      search_;
-	std::auto_ptr<SatPreprocessor> satPre_;
-	ContextOptions                 ctx_;
-	uint32                         concurrency_;
-};
-
-//! Global options controlling overall solving algorithm.
+//! Global options controlling global solving algorithms.
 struct GlobalOptions {
 public:
 	typedef ProgramBuilder::EqOptions EqOptions;
-	typedef std::auto_ptr<Enumerator> EnumPtr;
-	enum EnumMode      { enum_auto = 0, enum_bt = 1, enum_record = 2, enum_consequences = 4, enum_brave = 5, enum_cautious = 6 };
+	enum EnumMode { enum_auto = 0, enum_bt = 1, enum_record = 2, enum_consequences = 4, enum_brave = 5, enum_cautious = 6 };
 	GlobalOptions();
 	Enumerator*     createEnumerator(Enumerator::Report* r = 0);
 	bool consequences() const { return enumerate.consequences(); }
@@ -162,54 +107,59 @@ public:
 		bool      restartOnModel;/**< Restart after each model. */
 		bool      onlyPre;       /**< Stop after preprocessing step? */
 	}             enumerate;
-	IncrementalControl* inc;   /**< Incremental solving? */
-	void reset() {
-		ctx.reset();
-		solve     = SolveOptions();
-		eq        = EqOptions();
-		opt       = Optimize();
-		enumerate = EnumOptions();
-		inc       = 0;
-	}
 };
 
-//! Configuration object for configuring all supported aspects of solving.
-class ClaspConfig : public UserConfiguration {
+class ClaspFacade;
+
+//! Interface for controling incremental solving.
+class IncrementalControl {
 public:
-	typedef UserConfiguration  UserConfig;
-	typedef IncrementalControl IncrementalCtrl;
-	typedef Solver**           SolverIt;
+	IncrementalControl();
+	virtual ~IncrementalControl(); 
+	//! Called before an incremental step is started.
+	virtual void initStep(ClaspFacade& f)  = 0;
+	//! Called after an incremental step finished.
+	/*!
+	 * \return
+	 *  - true to signal that solving should continue with next step
+	 *  - false to terminate the incremental solving loop
+	 */
+	virtual bool nextStep(ClaspFacade& f)  = 0;
+private:
+	IncrementalControl(const IncrementalControl&);
+	IncrementalControl& operator=(const IncrementalControl&);
+};
+
+//! Parameter-object that groups & validates options.
+class ClaspConfig : public GlobalOptions {
+public:
+	typedef DefaultUnfoundedCheck::ReasonStrategy LoopMode;
+	typedef Lookahead::Type                       LookaheadType;
+	typedef DecisionHeuristic                     Heuristic;
+	enum HeuristicType { heu_none = 0, heu_berkmin = 1, heu_vsids = 2, heu_vmtf = 3, heu_unit = 4 };
+	static Heuristic* createHeuristic(const SolverStrategies& str);
 	ClaspConfig();
 	~ClaspConfig();
-	// Base interface
-	DecisionHeuristic*heuristic(uint32)    const;
-	void              init(SharedContext&) const;
-	const SolverOpts& solver(uint32)       const;
-	const SearchOpts& search(uint32)       const;
-	void              setConcurrency(uint32 num);
-	void              setSatPrepro(SatPreprocessor* p);
-	ContextOptions*   context()            { return &ctx().options(); }
-	SolverOpts&       addSolver(uint32 i);
-	SearchOpts&       addSearch(uint32 i);
-	// 
-	SharedContext&    ctx()              { return mode.ctx; }
-	IncrementalCtrl*  incremental() const{ return mode.inc; }
-	bool              onlyPre()     const{ return mode.enumerate.onlyPre; }
-	UserConfig*       testerConfig()const{ return tester_; } 
-	UserConfig*       addTesterConfig();
-	void              prepare(ClaspFacade& f);
-	bool              estimateComplexity() const;
-	void              reset();
-	GlobalOptions     mode;
+	SolverConfig* getSolver(uint32 i) const { return solvers_.at(i);}
+	SolverConfig* master()            const { return getSolver(0); }
+	uint32        numSolvers()        const { return (uint32)solvers_.size(); }
+	SolverConfig* addSolver()               { addSolver(new Solver()); return solvers_.back(); }
+	SolverConfig**solvers()                 { return &solvers_[0]; }
+	void          setMaxSolvers(uint32 i)   { removeSolvers(i); }
+	void          reserveSolvers(uint32 num);
+	uint32        removeSolvers(uint32 id);
+	bool          validate(std::string& err);
+	bool          validate(SolverConfig& sc, std::string& err);
+	void          applyHeuristic();
+	void          applyHeuristic(SolverConfig& sc);
+	void          reset();
 private:
 	ClaspConfig(const ClaspConfig&);
 	ClaspConfig& operator=(const ClaspConfig&);
-	typedef PodVector<SolveParams>::type  SolveOpts;
-	const SharedContext& ctx() const { return mode.ctx; }
-	SolveOpts     search_;
-	TesterConfig* tester_;
+	void          addSolver(Solver* s);
+	typedef PodVector<SolverConfig*>::type SolverConfigs;
+	SolverConfigs solvers_;
 };
-uint32 prepareConfig(SolverStrategies&, SolveParams&);
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClaspFacade
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -253,19 +203,35 @@ public:
 		virtual void warning(const char* msg)       = 0;
 	};
 	ClaspFacade();
-	
 	/*!
 	 * Solves the problem given in problem using the given configuration.
+	 * \pre config is valid, i.e. config.valid() returned true
 	 * \note Once solve() returned, the result of the computation can be
 	 * queried via the function result().
-	 * \note If config.onlyPre() is true, solve() returns after
+	 * \note If config.onlyPre is true, solve() returns after
 	 * the preprocessing step (i.e. once the solver is prepared) and does not start a search.
-	 *
-	 * \note If config.incremental() is != 0, solve() runs in a loop
-	 *       until config.incremental().nextStep(*this) returns false.
-	 *
 	 */
-	void solve(Input& problem, ClaspConfig& config, Callback* c);
+	void solve(Input& problem, ClaspConfig& config, Callback* c) { return solve(problem, config, 0, c); }
+
+	/*!
+	 * Incrementally solves the problem given in problem using the given configuration.
+	 * \pre config is valid, i.e. config.valid() returned true
+	 * \note Call result() to get the result of the computation.
+	 * \note config.onlyPre is ignored in incremental setting!
+	 *
+	 * solveIncremental() runs a simple loop that is controlled by the
+	 * given IncrementalControl object inc.
+	 * \code
+	 * do {
+	 *   inc.initStep(*this);
+	 *   read();
+	 *   preprocess();
+	 *   solve();
+	 * } while (inc.nextStep(*this));
+	 * \endcode
+	 * 
+	 */
+	void solveIncremental(Input& problem, ClaspConfig& config, IncrementalControl& inc, Callback* c) { solve(problem, config, &inc, c); }
 
 	//! Returns the result of a computation.
 	Result result() const { return result_; }
@@ -278,7 +244,7 @@ public:
 	//! Returns the current input problem.
 	Input* input() const { return input_; }
 	//! Tries to terminate an active search.
-	bool   terminate() const { return config_ && config_->ctx().solve && config_->ctx().solve->terminate(); }
+	bool   terminate() const { return ctrl_ && ctrl_->terminate(); }
 	
 	const ClaspConfig* config() const { return config_; }
 
@@ -296,6 +262,7 @@ public:
 private:
 	ClaspFacade(const ClaspFacade&);
 	ClaspFacade& operator=(const ClaspFacade&);
+	void solve(Input& problem, ClaspConfig& config, IncrementalControl* inc, Callback* c);
 	struct AutoState {
 		AutoState(ClaspFacade* f, State s) : self_(f), state_(s) { self_->setState(s, event_state_enter); }
 		~AutoState() { self_->setState(state_, event_state_exit); }
@@ -303,7 +270,8 @@ private:
 		State        state_;
 	};
 	typedef SingleOwnerPtr<ProgramBuilder> Api;
-	typedef SingleOwnerPtr<Enumerator>     EnumPtr;
+	typedef SingleOwnerPtr<SharedDependencyGraph> GraphPtr;
+	typedef SingleOwnerPtr<Enumerator>            EnumPtr;
 	// -------------------------------------------------------------------------------------------  
 	// Status information
 	void setState(State s, Event e)          { state_ = s; if (cb_) cb_->state(e, *this); }
@@ -322,23 +290,28 @@ private:
 	}
 	// -------------------------------------------------------------------------------------------
 	// Internal setup functions
-	void   init(Input&, ClaspConfig&, Callback* c);
-	bool   read(GlobalOptions& mode);
-	bool   preprocess(GlobalOptions& mode);
+	void   validateWeak();
+	void   validateWeak(ClaspConfig& cfg);
+	void   init(Input&, ClaspConfig&, IncrementalControl*, Callback* c);
+	bool   read();
+	bool   preprocess();
 	bool   solve(const LitVec& assume);
 	bool   initEnumeration(SharedMinimizeData* min);
 	bool   initContextObject(SharedContext& ctx) const;
-	uint32 concurrency() const { return config_->ctx().concurrency(); }
+	void   setGraph();
 	// -------------------------------------------------------------------------------------------
-	ClaspConfig*    config_;
-	Callback*       cb_;
-	Input*          input_;
-	EnumPtr         enum_;
-	Api             api_;
-	Result          result_;
-	State           state_;
-	int             step_;
-	bool            more_;
+	ClaspConfig*           config_;
+	IncrementalControl*    inc_;
+	Callback*              cb_;
+	Input*                 input_;
+	SolveAlgorithm*        ctrl_;
+	GraphPtr               graph_;
+	EnumPtr                enum_;
+	Api                    api_;
+	Result                 result_;
+	State                  state_;
+	int                    step_;
+	bool                   more_;
 };
 
 }

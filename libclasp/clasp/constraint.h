@@ -227,28 +227,27 @@ protected:
 	~LearntConstraint();
 };
 
-//! Base class for post propagators.
+//! Base class for all post propagators.
 /*!
- * Post propagators are called during propagation on each decision level and
+ * Post propagators are called after a solver finished unit-propagation and 
  * once after a total assignment is found.
- * 
- * They may extend a solver's unit-propagation with more elaborate propagation mechanisms.
- * The typical asp example is an unfounded set check.
+ * They may add more elaborate propagation mechanisms.
+ * The typical asp example would be an unfounded set check.
  *
- * \note Currently, the solver distinguishes *two* classes of post propagators:
- *       - class_simple: deterministic post propagators shall only extend
- *         the current decision level. That is, given DL, the decision level on which propagation started,
- *         these post propagators shall neither backtrack below DL nor permanently add new decision levels. 
- *         Deterministic post propagators are called in priority order. For this,
- *         the function PostPropagator::priority() is used and shall return a priority in the range: [priority_class_simple, priority_class_general)
- *       - class_general: post propagators that are non-deterministic or those that are not limited to extending
- *         the current decision level shall have a priority of priority_class_general. They are called in LIFO order but
- *         only after *all* simple post propagators have reached a fixpoint. 
- *
- * \note There are currently three reserved priority values, namely
- *       priority_reserved_msg for message and termination handler (if any),
- *       priority_reserved_ufs for the default unfounded set checker (if any),
- *       and priority_reserved_look for the default lookahead operator (if any).
+ * \note Post propagators are called in priority order. For this,
+ *       the function PostPropagator::priority() is used. 
+ *       Currently, the solver distinguishes *three* classes of 
+ *       post propagators:
+ *       - det_single: deterministic post propagators that only work on 
+ *         the current decision level. During propagation, these post 
+ *         propagators must neither backtrack nor create new levels. 
+ *         They shall have a priority in the range: [priority_highest, priority_lookahead)
+ *       - det_multi: post propagators that use some form of lookahead. They are only
+ *         called once all det_single post propagators finished. Furthermore,
+ *         they are disabled during lookahead operations. They shall have
+ *         a priority in the range [priority_lookahead, priority_general).
+ *       - multi: post propagators that are non-deterministic or work on many
+ *         decision levels shall have a priority in the range [priority_general, priority_lowest).
  */
 class PostPropagator : public Constraint {
 public:
@@ -256,74 +255,88 @@ public:
 	virtual ~PostPropagator();
 	using Constraint::propagate;  // Enable overloading!
 
-	PostPropagator* next; // main propagation lists of post propagators
-	//! Default priorities for post propagators.
+	PostPropagator* next; // for supporting lists of post propagators
+	//! Default priorities for post propagators
 	enum Priority {
-		priority_class_simple    = 0,    /**< Starting priority of simple post propagators. */
-		priority_reserved_msg    = 0,    /**< Reserved priority for message/termination handlers (if any). */
-		priority_reserved_ufs    = 10,   /**< Reserved priority for the default unfounded set checker (if any). */
-		priority_reserved_look   = 1023, /**< Reserved priority for the default lookahead operator (if any). */
-		priority_class_general   = 1024, /**< Priortiy of extended post propagators. */
+		priority_highest     = 0,   /**< highest possible priority  */
+		priority_single_high = 50,  /**< high det_single priority   */
+		priority_single      = 100, /**< default priority           */
+		priority_single_low  = 150, /**< low det_single priority    */
+		priority_lookahead   = 200, /**< default lookahead priority */
+		priority_general     = 300, /**< default general priority   */
+		priority_lowest      = 1024 /**< lowest possible priority   */
 	};
-
-	//! Shall return a value representing the priority of this propagator.
+	//! Returns a value representing the priority of this propagator.
 	/*!
 	 * The priority is used to order sequences of post propagators and to
-	 * classify post propagators w.r.t the classes: class_simple and class_general.
-	 * \note See class description for an overview of the two priority classes.
+	 * classify post propagators w.r.t the three classes: det_single, det_multi, and
+	 * multi.
+	 * \note The default implementation returns priority_single.
+	 * \note See class description for an overview of the three priority classes.
 	 */
-	virtual uint32 priority() const = 0;
+	virtual uint32 priority() const;
 
-	//! Called when this object is added as a post propagator to s.
-	/*!
-	 * \note During initialization a post propagator may assign variables
-	 *       but it must not yet propagate them.
-	 */
+	//! Called once after all constraints were added to solver.
 	virtual bool   init(Solver& s);
-	
-	//! Shall enqueue and propagate new assignments implied by this propagator.
-	/*!
-	 * This function shall enqueue and propagate all assignments currently implied by 
-	 * this propagator until a fixpoint is reached w.r.t this post propagator or 
-	 * a conflict is detected.
-	 * 
-	 * \pre   The assignment is fully propagated w.r.t any previous post propagator.
-	 * \param s    The solver in which this post propagator is used.
-	 * \param ctx  The post propagator from which this post propagator is called or
-	 *             0 if currently no other post propagator is currently active.
-	 * \post  s.queueSize() == 0 || s.hasConflict()
-	 * \return false if propagation led to conflict, true otherwise
-	 * 
-	 * \note 
-	 *   The function shall not call Solver::propagate()
-	 *   or any other function that would result in a recursive chain 
-	 *   of propagate() calls. On the other hand, it must call
-	 *   Solver::propagateUntil(this) after enqueuing new assignments 
-	 *   to initiate propagation up to this propagator.
-	 */
-	virtual bool   propagateFixpoint(Solver& s, PostPropagator* ctx) = 0;
 
-	//! Aborts an active propagation operation.
+	//! Shall enqueue new assignments to be propagated.
 	/*!
-	 * The function reset() is called whenever propagation on the
-	 * current decision level is stopped before a fixpoint is reached.
-	 * In particular, a solver calls reset() when a conflict is detected 
-	 * during propagation.
+	 * \pre    the assignment is fully propagated.
+	 * \param  s The solver in which this object is used.
+	 * \return 
+	 *   - false if propagation led to conflict
+	 *   - true otherwise
 	 *
+	 * \note 
+	 *   The function is called in the context of
+	 *   PostPropagator::propagateFixpoint(Solver& s).
+	 *   It must not call s.propagate() or any other function
+	 *   that would result in a recursive chain of propagate()
+	 *   calls.
+	 *
+	 * \see PostPropagator::propagateFixpoint(Solver& s)
+	 */
+	virtual bool propagate(Solver& s) = 0;
+
+	//! Clears internal state of this object and aborts any active propagation.
+	/*!
+	 * The solver containing this object calls reset() whenever a conflict is
+	 * detected during propagation.
 	 * \note The default implementation is a noop.
 	 */
-	virtual void   reset();
+	virtual void reset();
 
 	//! Is the current total assignment a model?
 	/*!
-	 * \pre The assignment is total and not conflicting.
+	 * \pre the assignment is total and not conflicting
 	 * \return
 	 *  - true if the assignment is a model w.r.t this post propagator
 	 *  - false otherwise
-	 * \post If the function returned true:  s.numFreeVars() == 0 && !s.hasConflict().
-	 *       If the function returned false: s.numFreeVars() > 0 || s.hasConflict().
+	 * \post If the function returned true, s.numFreeVars() == 0 && !s.hasConflict().
+	 *       Otherwise, s.numFreeVars() > 0 || s.hasConflict().
 	 */
-	virtual bool   isModel(Solver& s);
+	virtual bool isModel(Solver& s);
+
+	//! Propagates the current assignment until a fixpoint is reached w.r.t this post propagator.
+	/*!
+	 * This function implements a basic propagation loop that calls
+	 * PostPropagator::propagate(Solver& s) until a fixpoint is reached or
+	 * a conflict is detected.
+	 * \note
+	 *   Normally, subclasses only need to implement 
+	 *   PostPropagator::propagate(Solver& s).
+	 *
+	 * \param  s The solver in which this object is used.
+	 * \return false if propagation led to conflict, true otherwise
+	 * \pre    The assignment is fully propagated.
+	 * \post   A fixpoint was reached or propagation led to a conflict.
+	 * \note   The default implementation implements the following loop:
+	 *   REPEAT:
+	 *     if (!propagate())            return false;
+	 *     if (s.queueSize() == 0)      return true;
+	 *     if (!s.propagateUntil(this)) return false;
+	 */
+	virtual bool propagateFixpoint(Solver& s);
 protected:
 	//! PostPropagators are not clonable by default.
 	Constraint* cloneAttach(Solver&) { return 0; }
@@ -334,26 +347,6 @@ private:
 	PostPropagator(const PostPropagator&);
 	PostPropagator& operator=(const PostPropagator&);
 };
-
-//! Base class for legacy post propagators.
-template <class T>
-class LegacyPostPropagator : public PostPropagator {
-public:
-	//! Propagates the current assignment until a fixpoint is reached w.r.t this post propagator.
-	/*!
-	 * This function implements a basic propagation loop that calls
-	 * T::propagate(Solver& s) until a fixpoint is reached or
-	 * a conflict is detected.
-	 */
-	bool propagateFixpoint(Solver& s, PostPropagator*);
-	T*   derived()           { return static_cast<T*>(this); }
-protected:
-	template <typename U, bool (U::*)(Solver&, PostPropagator*)> struct enable { typedef bool type; };
-	template <typename U>
-	typename enable<U, &U::propagate>::type _propagate(Solver& s, PostPropagator* ctx, U* x){ return x->propagate(s, ctx); }
-	bool                                    _propagate(Solver& s, PostPropagator*, ...)     { return derived()->propagate(s); }
-};
-
 //@}
 
 //! Stores a reference to the constraint that implied a literal.

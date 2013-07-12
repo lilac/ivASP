@@ -133,7 +133,7 @@ struct SharedMinimizeData {
 	bool optimizeNext() { return optimizeNext(opt_); }
 	//@}
 private:
-	typedef std::atomic<Optimum*> OptPtr;
+	typedef Clasp::atomic<Optimum*> OptPtr;
 	SumVec       sum_;     // initial lhs sum
 	Optimum      opts_[2]; // buffers for update via "double buffering"
 	OptPtr       opt_;     // active optimum

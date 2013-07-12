@@ -26,64 +26,10 @@
 #include <stdio.h>
 namespace Clasp {
 /////////////////////////////////////////////////////////////////////////////////////////
-// Default configurations
-/////////////////////////////////////////////////////////////////////////////////////////
-Configuration::~Configuration() {}
-bool Configuration::addPost(Solver& s) const {
-	if (s.sharedContext() && s.sharedContext()->sccGraph.get() && !s.hasPost(PostPropagator::priority_reserved_ufs)) {
-		return s.addPost(new DefaultUnfoundedCheck());
-	}
-	return true;
-}
-void DefaultConfiguration::init(SharedContext& ctx) const {
-	ctx.options()          = context_s;
-	ctx.master()->strategy = solver(0);
-	ctx.satPrepro.reset(0);
-}
-DecisionHeuristic* DefaultConfiguration::heuristic(uint32) const { return new ClaspBerkmin; }
-ContextOptions   DefaultConfiguration::context_s;
-SolverStrategies DefaultConfiguration::solver_s;
-SolveParams      DefaultConfiguration::search_s;
-bool UserConfiguration::addPost(Solver& s) const {
-	const SolveParams& p = search(s.id());
-	bool  ok             = true;
-	if (p.init.lookType != Lookahead::no_lookahead && p.init.lookOps == 0 && !s.hasPost(PostPropagator::priority_reserved_look)) {
-		ok = s.addPost(new Lookahead(static_cast<Lookahead::Type>(p.init.lookType)));
-	}
-	return ok && Configuration::addPost(s);
-}
-/////////////////////////////////////////////////////////////////////////////////////////
-// Heuristics
-/////////////////////////////////////////////////////////////////////////////////////////
-namespace Heuristic {
-DecisionHeuristic* create(const SolverStrategies& str, const SolveParams& p) {
-	assert(str.search == SolverStrategies::use_learning || !Heuristic::isLookback(str.heuId));
-	typedef DecisionHeuristic DH;
-	uint32 heuParam = str.heuParam;
-	uint32 id       = str.heuId;
-	DH*    heu      = 0;
-	if      (id == heu_berkmin) { heu = new ClaspBerkmin(heuParam); }
-	else if (id == heu_vmtf)    { heu = new ClaspVmtf(heuParam == 0 ? 8 : heuParam); }
-	else if (id == heu_none)    { heu = new SelectFirst(); }
-	else if (id == heu_unit)    { heu = new UnitHeuristic(Lookahead::isType(heuParam) ? static_cast<Lookahead::Type>(heuParam) : Lookahead::atom_lookahead); }
-	else if (id == heu_vsids)   {
-		double m = heuParam == 0 ? 0.95 : heuParam; 
-		while (m > 1.0) { m /= 10; } 
-		heu = new ClaspVsids(m); 
-	}
-	else { throw std::runtime_error("Unknown heuristic id!"); }
-	if (p.init.lookType != Lookahead::no_lookahead && p.init.lookOps > 0 && id != heu_unit) {
-		heu = UnitHeuristic::restricted(static_cast<Lookahead::Type>(p.init.lookType), p.init.lookOps, heu);
-	}
-	return heu;
-}
-}
-/////////////////////////////////////////////////////////////////////////////////////////
 // GlobalOptions
 /////////////////////////////////////////////////////////////////////////////////////////
-IncrementalControl::IncrementalControl()  {}
-IncrementalControl::~IncrementalControl() {}
-GlobalOptions::GlobalOptions() : inc(0)   {}
+GlobalOptions::GlobalOptions() { }
+
 Enumerator* GlobalOptions::createEnumerator(Enumerator::Report* r) {
 	ModelEnumerator* e = 0;
 	Enumerator* ret    = 0;
@@ -104,196 +50,134 @@ Enumerator* GlobalOptions::createEnumerator(Enumerator::Report* r) {
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClaspConfig
 /////////////////////////////////////////////////////////////////////////////////////////
-ClaspConfig::ClaspConfig() : tester_(0) {
-	// Master configuration is always neeeded
-	ctx().master()->strategy = DefaultConfiguration::solver_s;
-	search_.push_back(DefaultConfiguration::search_s);
+ClaspConfig::ClaspConfig()  { addSolver(ctx.master()); }
+ClaspConfig::~ClaspConfig() {
+	setMaxSolvers(1);
+	delete solvers_.back();
+	solvers_.clear();
+}
+void ClaspConfig::reserveSolvers(uint32 num) {
+	ctx.setSolvers(num);
+	solvers_.reserve(num);
+}
+void ClaspConfig::addSolver(Solver* s) {
+	std::auto_ptr<Solver> x(s);
+	s->setId(solvers_.size());
+	s->strategies().heuId   = heu_berkmin;
+	s->strategies().heuOther= 3;
+	s->strategies().heuMoms = 1;
+	solvers_.push_back(new SolverConfig(*x.get()));
+	x.release();
+	if (solvers_.size() > ctx.numSolvers()) { ctx.setSolvers(solvers_.size()); }
+}
+uint32 ClaspConfig::removeSolvers(uint32 id) {
+	uint32 j = 1;
+	for (uint32 i = 1; i != numSolvers(); ++i) {
+		Solver* s = solvers_[i]->solver;
+		if (s->id() >= id) { delete s; delete solvers_[i]; }
+		else               { s->setId(j); solvers_[j++] = solvers_[i]; }
+	}
+	solvers_.resize(j);
+	ctx.setSolvers(j);
+	return j;
 }
 
-ClaspConfig::~ClaspConfig() {
-	ClaspConfig::setConcurrency(1);
-	delete tester_;
+bool ClaspConfig::validate(SolverConfig& sc, std::string& err) {
+	if (sc.solver->strategies().search == SolverStrategies::no_learning) {
+		if (sc.solver->strategies().heuId != heu_unit && sc.solver->strategies().heuId != heu_none) {
+			err  = "Selected heuristic requires lookback strategy!";
+			return false;
+		}
+		SolverStrategies* s = &sc.solver->strategies();
+		s->ccMinAntes  = SolverStrategies::no_antes;
+		s->strRecursive= 0;
+		s->compress    = UINT32_MAX;
+		s->saveProgress= 0;
+		sc.params.restart.disable();
+		sc.params.reduce.disable();
+	}
+	if (sc.params.restart.sched.disabled()) { sc.params.restart.disable(); }
+	if (sc.params.reduce.fReduce() == 0.0f) { sc.params.reduce.disable();  }
+	if (sc.params.reduce.fMax != 0.0f)      { sc.params.reduce.fMax = std::max(sc.params.reduce.fMax, sc.params.reduce.fInit); }
+	return true;
+}
+
+bool ClaspConfig::validate(std::string& err) {
+	if (enumerate.mode == enum_bt && enumerate.restartOnModel) { 
+		err = "Options 'restart-on-model' and 'enum-mode=bt' are mutually exclusive!";
+		return false;
+	}
+	for (uint32 i = 0; i != numSolvers(); ++i) {
+		if (!validate(*getSolver(i), err)) { return false; }
+	}
+	return true;
+}
+
+DecisionHeuristic* ClaspConfig::createHeuristic(const SolverStrategies& str) {
+	uint32 heuParam = str.heuParam;
+	uint32 id       = str.heuId;
+	if      (id == heu_berkmin) { return new ClaspBerkmin(heuParam); }
+	else if (id == heu_vmtf)    { return new ClaspVmtf(heuParam == 0 ? 8 : heuParam); }
+	else if (id == heu_none)    { return new SelectFirst(); }
+	else if (id == heu_unit)    { 
+		if (heuParam == 0 || heuParam > Lookahead::hybrid_lookahead) { heuParam = Lookahead::atom_lookahead; }
+		return new UnitHeuristic((LookaheadType)heuParam); 
+	}
+	else if (id == heu_vsids)   {
+		double m = heuParam == 0 ? 0.95 : heuParam;
+		while (m > 1.0) { m /= 10; }
+		return new ClaspVsids(m);
+	}
+	throw std::runtime_error("Unknown heuristic id!");
+}
+
+void ClaspConfig::applyHeuristic(SolverConfig& sc) {
+	Lookahead::Type lookT = (Lookahead::Type)sc.params.init.lookType;
+	HeuristicType heuType = (HeuristicType)sc.solver->strategies().heuId;
+	bool          lookHeu = heuType == heu_unit;
+	// check for unrestricted lookahead
+	if (lookHeu || (lookT != Lookahead::no_lookahead && sc.params.init.lookOps == 0)) {
+		sc.params.init.lookType = Lookahead::no_lookahead;
+		sc.params.init.lookOps  = 0;
+		if (!lookHeu) { sc.solver->addPost(new Lookahead(lookT)); }
+		else          { sc.solver->strategies().heuParam = lookT != Lookahead::no_lookahead ? lookT : Lookahead::atom_lookahead; }
+	}
+	sc.solver->setHeuristic(heuType, createHeuristic(sc.solver->strategies()));
+}
+
+void ClaspConfig::applyHeuristic() {
+	if (SolverStrategies::heuFactory_s == 0) {
+		SolverStrategies::heuFactory_s = &ClaspConfig::createHeuristic;
+	}
+	for (uint32 i = 0; i != numSolvers(); ++i) {
+		applyHeuristic(*getSolver(i));
+	}
 }
 
 void ClaspConfig::reset() {
-	mode.reset();
-	setConcurrency(1);
-	ctx().master()->strategy = DefaultConfiguration::solver_s;
-	search_[0]               = DefaultConfiguration::search_s;
+	ctx.reset();
+	solve    = SolveOptions();
+	eq       = EqOptions();
+	opt      = Optimize();
+	enumerate= EnumOptions();
+	master()->solver = ctx.master();
+	for (uint32 i = 1; i < numSolvers(); ++i) {
+		getSolver(i)->solver->reset();
+	}
 }
 
-const ClaspConfig::SolverOpts& ClaspConfig::solver(uint32 i) const {
-	return ctx().solver(i % ctx().concurrency())->strategy;
-}
-const ClaspConfig::SearchOpts& ClaspConfig::search(uint32 i) const {
-	return search_[ i % search_.size() ];
-}
-DecisionHeuristic* ClaspConfig::heuristic(uint32 i) const {
-	return Heuristic::create(ClaspConfig::solver(i), ClaspConfig::search(i));
-}
-void ClaspConfig::setSatPrepro(SatPreprocessor* p) {
-	ctx().satPrepro.reset(p);
-}
-
-ClaspConfig::SolverOpts& ClaspConfig::addSolver(uint32 i) {
-	while (!ctx().hasSolver(i)) {
-		Solver& s  = ctx().addSolver();	
-		s.strategy = ctx().solver(0)->strategy;
-	}
-	return ctx().solver(i)->strategy;
-}
-
-ClaspConfig::SearchOpts& ClaspConfig::addSearch(uint32 i) {
-	if (i >= search_.size()) {
-		search_.resize(i + 1, search_[0]);
-	}
-	return search_[i];
-}
-
-void ClaspConfig::setConcurrency(uint32 num) {
-	if (num <= 1) {
-		num = 1;
-		ctx().options().setDistribution(0,0,0);
-	}
-	ctx().concurrency(num);
-	while (search_.size() > num) { search_.pop_back(); }
-}
-
-bool ClaspConfig::estimateComplexity() const {
-	for (SolveOpts::const_iterator it = search_.begin(), end = search_.end(); it != end; ++it) {
-		if (it->reduce.estimate()) { return true; }
-	}
-	return false;
-}
-
-void ClaspConfig::prepare(ClaspFacade& f) {
-	uint32 numS = ctx().concurrency();
-	if (incremental() && mode.enumerate.onlyPre) {
-		f.warning("'--pre' is ignored in incremental setting."); 
-		mode.enumerate.onlyPre = false;
-	}
-	if (mode.eq.noSCC && mode.eq.iters != 0) {
-		f.warning("Selected reasoning mode implies '--eq=0'.");
-		mode.eq.noEq();
-	}
-	if (numS > mode.solve.recommendedSolvers()) {
-		char buf[128];
-		sprintf(buf, "Oversubscription: #Threads=%u exceeds logical CPUs (%u).", numS, mode.solve.recommendedSolvers());
-		f.warning(buf);
-		f.warning("Oversubscription leads to excessive context switching.");
-	}
-	if (mode.opt.all || mode.opt.no) {
-		mode.opt.hierarch = 0;
-	}
-	if (mode.enumerate.numModels == -1 && mode.consequences()) {
-		mode.enumerate.numModels = 0;
-	}
-	if (numS > mode.solve.supportedSolvers()) {
-		f.warning("Too many solvers.");
-		setConcurrency(mode.solve.supportedSolvers());
-	}
-	uint32 warn   = 0;
-	for (uint32 i = 0, end = ctx().concurrency(), mod = search_.size(); i != end; ++i) {
-		warn |= prepareConfig(ctx().solver(i)->strategy, search_[i % mod]);
-	}
-	if (tester_) {
-		warn |= tester_->prepare();
-		tester_->setConcurrency(ctx().concurrency());
-	}
-	if ((warn & 1) != 0) {
-		f.warning("Heuristic 'Unit' implies lookahead. Using atom.");
-	}
-	if ((warn & 2) != 0) {
-		f.warning("Heuristic 'Unit' implies unrestricted lookahead.");
-	}
-	ctx().setConfiguration(this, false);
-}
-
-void ClaspConfig::init(SharedContext& ctx) const {
-	if (&ctx == &mode.ctx) {
-		// Nothing to do because ClaspConfig stores
-		// ctx-options and preprocessor directly in 
-		// its shared context object
-	}
-	else { throw std::runtime_error("ClaspConfig::init(): unsupported ctx"); }
-}
-UserConfiguration* ClaspConfig::addTesterConfig() {
-	if (!tester_) { 
-		tester_ = new TesterConfig(ctx());
-	}
-	return tester_;
-}
-uint32 prepareConfig(SolverStrategies& st, SolveParams& sx) {
-	uint32 res = 0;
-	if (st.heuId == Heuristic::heu_unit) {
-		if      (sx.init.lookType == Lookahead::no_lookahead) { res |= 1; }
-		else if (sx.init.lookOps != 0)                        { res |= 2; }
-		st.heuParam      = sx.init.lookType == Lookahead::no_lookahead ? Lookahead::atom_lookahead : static_cast<Lookahead::Type>(sx.init.lookType);
-		sx.init.lookType = Lookahead::no_lookahead;
-		sx.init.lookOps  = 0;
-	}
-	if (st.search == SolverStrategies::no_learning) {
-		sx.restart.disable();
-		sx.reduce.disable();
-		st.ccMinAntes  = SolverStrategies::no_antes;
-		st.strRecursive= 0;
-		st.compress    = 0;
-		st.saveProgress= 0;
-	}
-	if (sx.restart.sched.disabled()) { sx.restart.disable(); }
-	if (sx.reduce.fReduce() == 0.0f) { sx.reduce.disable();  }
-	if (sx.reduce.fMax != 0.0f)      { sx.reduce.fMax = std::max(sx.reduce.fMax, sx.reduce.fInit); }
-	return res;
-}
-/////////////////////////////////////////////////////////////////////////////////////////
-// TesterConfig
-/////////////////////////////////////////////////////////////////////////////////////////
-TesterConfig::TesterConfig(const SharedContext& gen) : concurrency_(gen.concurrency()) {
-	solver_.push_back(DefaultConfiguration::solver_s);
-	search_.push_back(DefaultConfiguration::search_s);
-}
-SolverStrategies& TesterConfig::addSolver(uint32 i) {
-	if (i >= solver_.size()) {
-		solver_.resize(i+1, solver_[0]);
-	}
-	return solver_[i];
-}
-SolveParams& TesterConfig::addSearch(uint32 i) {
-	if (i >= search_.size()) {
-		search_.resize(i+1, search_[0]);
-	}
-	return search_[i];
-}
-void TesterConfig::init(SharedContext& ctx) const {
-	ctx.options() = ctx_;
-	ctx.concurrency(concurrency_);
-	for (uint32 i = 1; i != concurrency_; ++i) {
-		ctx.addSolver();
-	}
-	if (satPre_.get()) {
-		ctx.satPrepro.reset(satPre_->clone());
-	}
-	ctx.master()->strategy = solver_[0];
-}
-uint32 TesterConfig::prepare() {
-	uint32 res = 0;
-	for (uint32 i = 0; i != solver_.size(); ++i) {
-		SolverStrategies& s = solver_[i];
-		SolveParams&      sx= search_[i % search_.size()];
-		res |= prepareConfig(s, sx);
-	}
-	return res;
-}
-DecisionHeuristic* TesterConfig::heuristic(uint32 i) const {
-	return Heuristic::create(TesterConfig::solver(i), TesterConfig::search(i));
-}
+IncrementalControl::IncrementalControl()  {}
+IncrementalControl::~IncrementalControl() {}
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClaspFacade
 /////////////////////////////////////////////////////////////////////////////////////////
 ClaspFacade::ClaspFacade() 
 	: config_(0)
+	, inc_(0)
 	, cb_(0)
 	, input_(0)
+	, ctrl_(0)
+	, graph_(0)
 	, enum_(0)
 	, api_(0)
 	, result_(result_unknown)
@@ -302,39 +186,95 @@ ClaspFacade::ClaspFacade()
 	, more_(true) {
 }
 
-void ClaspFacade::init(Input& problem, ClaspConfig& config, Callback* c) {
+void ClaspFacade::init(Input& problem, ClaspConfig& config, IncrementalControl* inc, Callback* c) {
 	config_ = &config;
+	inc_    = inc;
 	cb_     = c;
 	input_  = &problem;
-	enum_   = config.mode.enumerate.mode != GlobalOptions::enum_auto ? config.mode.createEnumerator(this) : 0;
+	ctrl_   = 0;
+	graph_  = 0;
+	enum_   = config.enumerate.mode != GlobalOptions::enum_auto ? config.createEnumerator(this) : 0;
 	api_    = 0;
 	result_ = result_unknown;
 	state_  = num_states;
 	step_   = 0;
 	more_   = true;
-	if (enum_.get() && !enum_->supportsParallel() && config_->ctx().concurrency() > 1) {
-		warning("Selected reasoning mode implies #Threads=1.");
-		config_->setConcurrency(1);
+	validateWeak();
+	config.applyHeuristic();
+}
+
+void ClaspFacade::validateWeak(ClaspConfig& cfg) {
+	if (cfg.numSolvers() > cfg.solve.supportedSolvers()) {
+		warning("Too many solvers.");
+		cfg.setMaxSolvers(cfg.solve.supportedSolvers());
 	}
-	config_->prepare(*this);
+	bool warnUnit = true;
+	bool warnInit = true;
+	for (uint32 i = 0; i != cfg.numSolvers(); ++i) {
+		if (cfg.getSolver(i)->solver->strategies().heuId == ClaspConfig::heu_unit) {
+			InitParams& p = cfg.getSolver(i)->params.init;
+			if (p.lookType == Lookahead::no_lookahead) {
+				if (warnUnit) {
+					warning("Heuristic 'Unit' implies lookahead. Using atom.");
+					warnUnit = false;
+				}
+				p.lookType = Lookahead::atom_lookahead;
+			}
+			else if (p.lookOps != 0) {
+				if (warnInit) {
+					warning("Heuristic 'Unit' implies unrestricted lookahead.");
+					warnInit = false;
+				}
+				p.lookOps = 0;
+			}
+		}
+	}
+}
+
+void ClaspFacade::validateWeak() {
+	if (inc_) {
+		if (config_->enumerate.onlyPre) {
+			warning("'--pre' is ignored in incremental setting."); 
+			config_->enumerate.onlyPre = false;
+		}
+	}
+	if (config_->eq.noSCC && config_->eq.iters != 0) {
+		warning("Selected reasoning mode implies '--eq=0'.");
+		config_->eq.noEq();
+	}
+	if (config_->numSolvers() > 1 && enum_.get() && !enum_->supportsParallel()) {
+		warning("Selected reasoning mode implies #Threads=1.");
+		config_->setMaxSolvers(1);
+	}
+	if (config_->numSolvers() > config_->solve.recommendedSolvers()) {
+		char buf[128];
+		sprintf(buf, "Oversubscription: #Threads=%u exceeds logical CPUs (%u).", config_->numSolvers(), config_->solve.recommendedSolvers());
+		warning(buf);
+		warning("Oversubscription leads to excessive context switching.");
+	}
+	if (config_->opt.all || config_->opt.no) {
+		config_->opt.hierarch = 0;
+	}
+	if (config_->enumerate.numModels == -1 && config_->consequences()) {
+		config_->enumerate.numModels = 0;
+	}
+	validateWeak(*config_);
 }
 
 // Solving...
-void ClaspFacade::solve(Input& problem, ClaspConfig& config, Callback* c) {
-	init(problem, config, c);
-	GlobalOptions& mode     = config.mode;
-	const bool onlyPre      = mode.enumerate.onlyPre;
-	IncrementalControl* inc = config.incremental();
+void ClaspFacade::solve(Input& problem, ClaspConfig& config, IncrementalControl* inc, Callback* c) {
+	init(problem, config, inc, c);
+	const bool onlyPre = config.enumerate.onlyPre;
 	AutoState outer(this, state_start);
 	LitVec assume;
 	do {
 		if (inc) { inc->initStep(*this); }
 		result_   = result_unknown;
 		more_     = true;
-		if (config.mode.ctx.master()->hasConflict() || !read(mode) || !preprocess(mode)) {
+		if (config.ctx.master()->hasConflict() || !read() || !preprocess()) {
 			result_ = result_unsat;
 			more_   = false;
-			reportSolution(*config.mode.ctx.enumerator(), true);
+			reportSolution(*config.ctx.enumerator(), true);
 			break;
 		}
 		else if (!onlyPre) {
@@ -352,26 +292,25 @@ void ClaspFacade::solve(Input& problem, ClaspConfig& config, Callback* c) {
 // Creates a ProgramBuilder-object if necessary and reads
 // the input by calling input_->read().
 // Returns false, if the problem is trivially UNSAT.
-bool ClaspFacade::read(GlobalOptions& mode) {
+bool ClaspFacade::read() {
 	AutoState state(this, state_read);
-	Input::ApiPtr ptr(&mode.ctx);
+	Input::ApiPtr ptr(&config_->ctx);
 	if (input_->format() == Input::SMODELS) {
 		if (step_ == 0) {
 			api_   = new ProgramBuilder();
-			api_->startProgram(mode.ctx, mode.eq);
-			api_->setNonHcfConfiguration(config_->testerConfig());
+			api_->startProgram(config_->ctx, config_->eq);
 		}
-		if (mode.inc) {
+		if (inc_) {
 			api_->updateProgram();
 		}
 		ptr.api= api_.get();
 	}
-	if (mode.opt.hierarch > 0 && !mode.opt.no) {
-		mode.ctx.requestTagLiteral();
+	if (config_->opt.hierarch > 0 && !config_->opt.no) {
+		config_->ctx.requestTagLiteral();
 	}
-	uint32 properties = !mode.enumerate.maxSat || input_->format() != Input::DIMACS ? 0 : Input::AS_MAX_SAT;
-	if (mode.enumerate.numModels != 1) { 
-		properties |= mode.enumerate.numModels == -1 ? Input::PRESERVE_MODELS_ON_MIN : Input::PRESERVE_MODELS;
+	uint32 properties = !config_->enumerate.maxSat || input_->format() != Input::DIMACS ? 0 : Input::AS_MAX_SAT;
+	if (config_->enumerate.numModels != 1) { 
+		properties |= config_->enumerate.numModels == -1 ? Input::PRESERVE_MODELS_ON_MIN : Input::PRESERVE_MODELS;
 	}
 	return input_->read(ptr, properties);
 }
@@ -382,9 +321,9 @@ bool ClaspFacade::read(GlobalOptions& mode) {
 //  - adds any minimize statements to the solver and initializes the enumerator
 //  - calls Solver::endInit().
 // Returns false, if the problem is trivially UNSAT.
-bool ClaspFacade::preprocess(GlobalOptions& mode) {
+bool ClaspFacade::preprocess() {
 	AutoState state(this, state_preprocess);
-	SharedContext&    ctx = mode.ctx;
+	SharedContext& ctx = config_->ctx;
 	SharedMinimizeData* m = 0;
 	Input::ApiPtr ptr(&ctx);
 	if (api_.get()) {
@@ -392,30 +331,31 @@ bool ClaspFacade::preprocess(GlobalOptions& mode) {
 			fireEvent(*ctx.master(), event_p_prepared);
 			return false;
 		}
+		setGraph();
 		ptr.api = api_.get();
 	}
-	if (!mode.opt.no && step_ == 0) {
+	if (!config_->opt.no && step_ == 0) {
 		MinimizeBuilder builder;
 		input_->addMinimize(builder, ptr);
 		if (builder.hasRules()) {
-			if (!mode.opt.vals.empty()) {
-				const SumVec& opt = mode.opt.vals;
+			if (!config_->opt.vals.empty()) {
+				const SumVec& opt = config_->opt.vals;
 				for (uint32 i = 0; i != opt.size(); ++i) {
 					builder.setOptimum(i, opt[i]);
 				}
 			}
-			m = builder.build(ctx, ctx.tagLiteral());
+			m = builder.build(ctx, config_->ctx.tagLiteral());
 			if (!m) { return false; }
 		}
-		if (!builder.hasRules() || (builder.numRules() == 1 && mode.opt.hierarch < 2)) {
-			ctx.removeTagLiteral();
+		if (!builder.hasRules() || (builder.numRules() == 1 && config_->opt.hierarch < 2)) {
+			config_->ctx.removeTagLiteral();
 		}
 	}
 	fireEvent(*ctx.master(), event_p_prepared);
-	if (!mode.inc && api_.is_owner()) {
+	if (!inc_ && api_.is_owner()) {
 		api_ = 0;
 	}
-	return mode.enumerate.onlyPre || (initEnumeration(m) && initContextObject(ctx));
+	return config_->enumerate.onlyPre || (initEnumeration(m) && initContextObject(ctx));
 }
 
 // Finalizes initialization of model enumeration.
@@ -423,47 +363,47 @@ bool ClaspFacade::preprocess(GlobalOptions& mode) {
 // sts the number of models to compute and adds warnings
 // if this number conflicts with the preferred number of the enumerator.
 bool ClaspFacade::initEnumeration(SharedMinimizeData* min)  {
-	GlobalOptions::EnumOptions& mode = config_->mode.enumerate;
-	MinimizeMode minMode             = !min || config_->mode.opt.all ? MinimizeMode_t::enumerate : MinimizeMode_t::optimize;
+	GlobalOptions::EnumOptions& opts = config_->enumerate;
+	MinimizeMode minMode             = !min || config_->opt.all ? MinimizeMode_t::enumerate : MinimizeMode_t::optimize;
 	if (step_ == 0) {
 		GlobalOptions::EnumMode autoMode = GlobalOptions::enum_bt;
-		if (mode.restartOnModel) {
+		if (opts.restartOnModel) {
 			autoMode = GlobalOptions::enum_record;
 		}
-		if (minMode == MinimizeMode_t::optimize && !mode.project) {
+		if (minMode == MinimizeMode_t::optimize && !opts.project) {
 			autoMode = GlobalOptions::enum_record;
 		}
-		if (mode.project && concurrency() > 1) {
+		if (opts.project && config_->numSolvers() > 1) {
 			autoMode = GlobalOptions::enum_record;
 		}
-		uint32 autoModels = !min && !mode.consequences();
-		if (autoModels == 0 && mode.numModels > 0) {
-			if (mode.consequences())                { warning("'--number' not 0: last model may not cover consequences.");   }
+		uint32 autoModels = !min && !config_->consequences();
+		if (autoModels == 0 && opts.numModels > 0) {
+			if (config_->consequences())            { warning("'--number' not 0: last model may not cover consequences.");   }
 			if (minMode == MinimizeMode_t::optimize){ warning("'--number' not 0: optimality of last model not guaranteed."); }
 		}
-		if (mode.numModels == -1) { mode.numModels = autoModels; }	
-		if (mode.consequences() && minMode == MinimizeMode_t::optimize) {
+		if (opts.numModels == -1)      { opts.numModels = autoModels; }	
+		if (config_->consequences() && minMode == MinimizeMode_t::optimize) {
 			warning("Optimization: Consequences may depend on enumeration order.");
 		}
-		if (mode.project && minMode == MinimizeMode_t::optimize) {
+		if (opts.project && minMode == MinimizeMode_t::optimize) {
 			for (const WeightLiteral* it = min->lits; !isSentinel(it->first); ++it) {
-				if ( !config_->mode.ctx.project(it->first.var()) ) {
+				if ( !config_->ctx.project(it->first.var()) ) {
 					warning("Projection: Optimization values may depend on enumeration order.");
 					break;
 				}
 			}
 		}
-		if (mode.mode == GlobalOptions::enum_auto) {
-			mode.mode = autoMode;
-			enum_ = config_->mode.createEnumerator(this);
+		if (config_->enumerate.mode == GlobalOptions::enum_auto) {
+			config_->enumerate.mode = autoMode;
+			enum_ = config_->createEnumerator(this);
 		}
 	}
 	if (min) {
-		min->setMode(minMode, config_->mode.opt.hierarch);
+		min->setMode(minMode, config_->opt.hierarch);
 		enum_->setMinimize(min);
 	}
-	enum_->enumerate(mode.numModels);
-	config_->mode.ctx.addEnumerator(enum_.release());
+	enum_->enumerate(opts.numModels);
+	config_->ctx.addEnumerator(enum_.release());
 	return true;
 }
 
@@ -473,8 +413,16 @@ bool ClaspFacade::initEnumeration(SharedMinimizeData* min)  {
 // to determine the initial learnt db size.
 bool ClaspFacade::initContextObject(SharedContext& ctx) const {
 	if (!ctx.endInit()) { return false; }
-	uint32 estimate = config_->estimateComplexity() ? ctx.problemComplexity() : 0;
-	uint32 size     = ctx.numConstraints();
+	uint32 estimate = 0;
+	uint32 size     = 0;
+	for (uint32 i = 0; i != config_->numSolvers(); ++i) {
+		SolverConfig* x = config_->getSolver(i);
+		if (x->params.reduce.estimate() && estimate == 0) {
+			estimate = ctx.problemComplexity();
+			break;
+		}
+	}
+	size = ctx.numConstraints();
 	if (input_->format() != Input::DIMACS) {
 		double r = ctx.numVars() / std::max(1.0, double(ctx.numConstraints()));
 		if (r < 0.1 || r > 10.0) {
@@ -488,26 +436,33 @@ bool ClaspFacade::initContextObject(SharedContext& ctx) const {
 	return true;
 }
 
+void ClaspFacade::setGraph() {
+	if (!graph_.get() && api_->dependencyGraph() && api_->dependencyGraph()->nodes() > 0) {
+		graph_ = api_->dependencyGraph(true);
+		for (uint32 i = 0; i != config_->numSolvers(); ++i) {
+			DefaultUnfoundedCheck* ufs = new DefaultUnfoundedCheck();
+			ufs->attachTo(*config_->getSolver(i)->solver, graph_.get());
+		}
+	}
+}
+
 bool ClaspFacade::solve(const LitVec& assume) {
 	struct OnExit : AutoState { 
 		OnExit(ClaspFacade* f) : AutoState(f, state_solve) {}
-		~OnExit() { SolveAlgorithm* x = self_->config_->ctx().solve; self_->config_->ctx().solve = 0; delete x; }
+		~OnExit() { SolveAlgorithm* x = self_->ctrl_; self_->ctrl_ = 0; delete x; }
 	};
-	OnExit resetSolve(this);
-	config_->mode.solve.createSolveObject(config_->ctx());
-	SolveAlgorithm* algo = config_->ctx().solve;
-	bool more = algo->solve(config_->ctx(), config_->search(0), assume);
-	if (algo->hasErrors() && concurrency() > 1) {
-		uint64 failMask = algo->hasErrors();
-		for (uint32 i = config_->mode.ctx.concurrency(); i && failMask; ) {
-			uint32 idMask = uint64(1) << (--i);
-			if ((failMask & idMask) != 0) {
+	OnExit resetCtrl(this);
+	config_->solve.createSolveObject(ctrl_, config_->ctx, config_->solvers());
+	bool more = ctrl_->solve(config_->ctx, config_->master()->params, assume);
+	if (ctrl_->hasErrors()) {
+		for (uint32 i = 0; i != config_->numSolvers(); ++i) {
+			if (config_->getSolver(i)->solver->id() == Solver::invalidId) {
 				char buf[128];
 				sprintf(buf, "Thread %u failed and was removed.", i);
 				warning(buf);
-				failMask &= ~idMask;
 			}
-		} 
+		}
+		config_->removeSolvers(Solver::invalidId);
 	}
 	return more;
 }

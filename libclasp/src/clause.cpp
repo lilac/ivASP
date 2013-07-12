@@ -180,8 +180,7 @@ struct ClauseCreator::Watches {
 // ClauseCreator
 /////////////////////////////////////////////////////////////////////////////////////////
 ClauseCreator::ClauseCreator(Solver* s) 
-	: solver_(s)
-	, flags_(0) { }
+: solver_(s) { }
 
 void ClauseCreator::init(ConstraintType t) {
 	assert(!solver_ || solver_->decisionLevel() == 0 || t != Constraint_t::static_constraint);
@@ -223,31 +222,39 @@ ClauseCreator& ClauseCreator::add(const Literal& p) {
 	return *this;
 }
 
-void ClauseCreator::simplify(Solver& s, LitVec& lits) {
-	LitVec::iterator j = lits.begin();
-	uint32 abst_p = 0, fw = 0, sw = 0;
-	bool   sat    = false;
-	for (LitVec::const_iterator it = lits.begin(), end = lits.end(); it != end && !sat; ++it) {
-		Literal p = *it;
-		if (!s.seen(p.var()) && (abst_p = Detail::levelAbstraction(s, p)) != 0 && abst_p != UINT32_MAX) {
-			*j++    = p;
-			if (abst_p > fw) { std::swap(fw, abst_p); std::swap(lits[0], j[-1]); } 
-			if (abst_p > sw) { std::swap(sw, abst_p); std::swap(lits[1], j[-1]); }
-			s.markSeen(p);
-		}
-		else if (s.seen(~p) || abst_p == UINT32_MAX) { sat = true; }
-	}
-	lits.erase(j, lits.end());
-	for (LitVec::const_iterator it = lits.begin(), end = lits.end(); it != end; ++it) {
-		s.clearSeen(it->var());
-	}
-	if (sat) { lits.assign(1, posLit(0)); }
-}
-
 void ClauseCreator::simplify() {
-	simplify(*solver_, literals_);
-	fwLev_ = Detail::levelAbstraction(*solver_, literals_[0]);
-	swLev_ = Detail::levelAbstraction(*solver_, literals_[literals_.size() > 1]);
+	if (literals_.empty()) return;
+	swLev_    = 0;
+	uint32 sw = 0;
+	solver_->markSeen(literals_[0]);
+	LitVec::size_type i, j = 1;
+	for (i = 1; i != literals_.size(); ++i) {
+		Literal x = literals_[i];
+		if (solver_->seen(~x)) { 
+			fwLev_     = UINT32_MAX; 
+			continue;
+		}
+		if (!solver_->seen(x)) {
+			solver_->markSeen(x);
+			if (i != j) { literals_[j] = literals_[i]; }
+			if (swLev_ != uint32(-1)) {
+				uint32 xLev = solver_->value(x.var()) == value_free ? uint32(-1) : solver_->level(x.var());
+				if (swLev_ < xLev) {
+					swLev_ = xLev;
+					sw     = (uint32)j;
+				}
+			}
+			++j;
+		}
+	}
+	literals_.erase(literals_.begin()+j, literals_.end());
+	for (LitVec::iterator it = literals_.begin(), end = literals_.end(); it != end; ++it) {
+		solver_->clearSeen(it->var());
+	}
+	if (literals_.size() >= 2 && sw != 1) {
+		std::swap(literals_[1], literals_[sw]);
+	}
+	if (fwLev_ == UINT32_MAX) { literals_[0] = posLit(0); }
 }
 
 ClauseCreator::Status ClauseCreator::status(uint32 dl, uint32 fw, uint32 sw) {
@@ -290,8 +297,8 @@ ClauseCreator::Status ClauseCreator::status(const Solver& s, const Watches& w, u
 ClauseCreator::Result ClauseCreator::end() {
 	assert(solver_);
 	Result ret(0);
-	Solver& s    = *solver_;
-	uint32 flags = flags_ | clause_known_order | clause_not_sat | clause_not_conflict;
+	Solver& s     = *solver_;
+	uint32  flags = clause_known_order | clause_not_sat | clause_not_conflict;
 	if (extra_.learnt() && !isSentinel(s.sharedContext()->tagLiteral())) {
 		extra_.setTagged(std::find(literals_.begin(), literals_.end(), ~s.sharedContext()->tagLiteral()) != literals_.end());
 	}
@@ -303,9 +310,9 @@ ClauseCreator::Status ClauseCreator::initWatches(Solver& s, LitVec& lits, bool a
 	if (size < 2) return size == 1 ? status_unit : status_empty;
 	if (allFree) {
 		uint32 fw = 0, sw = 1;
-		uint32 w  = s.strategy.initWatches;
+		uint32 w  = s.strategies().initWatches;
 		if (w == SolverStrategies::watch_rand) {
-			RNG& r = s.rng();
+			RNG& r = s.strategies().rng;
 			fw = r.irand(size);
 			while ( (sw = r.irand(size)) == fw) {/*intentionally empty*/}
 		}
@@ -361,7 +368,7 @@ ClauseHead* ClauseCreator::newLearntClause(Solver& s, LitVec& lits, const Clause
 	Detail::Sink sharedPtr(0);
 	sharedPtr.clause = s.sharedContext()->distribute(s, &lits[0], static_cast<uint32>(lits.size()), e);
 	if (lits.size() <= Clause::MAX_SHORT_LEN || sharedPtr.clause == 0) {
-		if (!s.isFalse(lits[1]) || !s.strategy.compress || lits.size() < s.strategy.compress) {
+		if (!s.isFalse(lits[1]) || lits.size() < s.strategies().compress) {
 			ret = Clause::newLearntClause(s, lits, e);
 		}
 		else {
@@ -392,10 +399,6 @@ ClauseHead* ClauseCreator::newUnshared(Solver& s, SharedLiterals* clause, const 
 
 ClauseCreator::Result ClauseCreator::create(Solver& s, LitVec& lits, uint32 flags, const ClauseInfo& extra) {
 	assert(s.decisionLevel() == 0 || extra.learnt());
-	if ((flags & clause_force_simplify) != 0) {
-		simplify(s, lits);
-		flags |= clause_known_order;
-	}
 	Result ret;
 	if (lits.size() > 1) {
 		Watches w(s, lits, (flags & clause_known_order) != 0);
@@ -685,7 +688,7 @@ bool Clause::simplify(Solver& s, bool reinit) {
 		}
 		if (reinit && size > 3) {
 			detach(s);
-			std::random_shuffle(head_, j, s.rng());
+			std::random_shuffle(head_, j, s.strategies().rng);
 			attach(s);	
 		}
 	}

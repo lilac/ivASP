@@ -50,11 +50,11 @@ bool MinimizeConstraint::attach(Solver& s) {
 	uint32 numL = 0;
 	VarVec up;
 	const SharedData* d = shared_;
-	const bool heuristic= (s.strategy.optHeu & SolverStrategies::opt_sign) != 0;
+	const bool heuristic= (s.strategies().optHeu & SolverStrategies::opt_sign) != 0;
 	for (const WeightLiteral* it = d->lits; !isSentinel(it->first); ++it, ++numL) {
 		if (s.value(it->first.var()) == value_free) {
 			s.addWatch(it->first, this, numL);
-			if (heuristic) { s.setPref(it->first.var(), ValueSet::pref_value, falseValue(it->first)); }
+			if (heuristic) { s.initSavedValue(it->first.var(), falseValue(it->first)); }
 		}
 		else if (s.isTrue(it->first)) {
 			up.push_back(numL);
@@ -286,7 +286,7 @@ bool MinimizeConstraint::integrateNext(Solver& s) {
 }
 
 bool MinimizeConstraint::modelHeuristic(Solver& s) {
-	const bool modelHeu  = (s.strategy.optHeu & SolverStrategies::opt_model) != 0;
+	const bool modelHeu  = (s.strategies().optHeu & SolverStrategies::opt_model) != 0;
 	const bool heuristic = modelHeu || (s.queueSize() == 0 && s.decisionLevel() == s.rootLevel());
 	if (heuristic && s.propagate()) {
 		for (const WeightLiteral* w = pos_; !isSentinel(w->first); ++w) {
@@ -521,6 +521,7 @@ MinimizeBuilder& MinimizeBuilder::addRule(const WeightLitVec& lits, wsum_t initS
 	}
 	uint32 lev = (uint32)sum_.size();
 	for (WeightLitVec::const_iterator it = lits.begin(); it != lits.end(); ++it) {
+		assert(it->second >= 0);
 		if (it->second > 0) {
 			lits_.push_back(LitRep(it->first, new Weight(lev, it->second)));
 		}
