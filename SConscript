@@ -101,7 +101,14 @@ if not cppunit:
 
 env = conf.Finish()
 
-# Clasp: Library
+# ProgramOpt: Library
+programOptEnv = env.Clone()
+programOptEnv['CPPPATH'] = [Dir('#libprogram_opts'), 'libprogram_opts/src']
+
+LIBPROGRAMOPTS_SRC = find_files(programOptEnv, 'libprogram_opts/src')
+programOptEnv.StaticLibrary('libprogram_opts', LIBPROGRAMOPTS_SRC)
+
+# Clasp: Library + Program
 
 claspEnv = env.Clone()
 claspEnv['CPPPATH']  = [Dir('#libclasp'), 'libclasp/src']
@@ -109,7 +116,10 @@ claspEnv['CPPPATH']  = [Dir('#libclasp'), 'libclasp/src']
 CLASP_SOURCES    = find_files(claspEnv, 'app/clasp')
 LIBCLASP_SOURCES = find_files(claspEnv, 'libclasp/src')
 
+claspEnv.Append(CPPDEFINES={'WITH_THREADS' : '0'})
 claspEnv.StaticLibrary('libclasp', LIBCLASP_SOURCES)
+claspEnv.Append(CPPPATH = [Dir('#libprogram_opts')])
+claspProgram = claspEnv.Program('clasp', CLASP_SOURCES, LIBS=['libclasp', 'libprogram_opts'], LIBSPATH=Dir('.'))
 
 # Gringo: Library + Program
 
@@ -124,6 +134,7 @@ gringoProgram = gringoEnv.Program('gringo', GRINGO_SOURCES, LIBS=[ 'libgringo' ]
 
 if not env.GetOption('clean'):
     Default(gringoProgram)
+    Default(claspProgram)
 
 # Gringo: UnitTests
 
