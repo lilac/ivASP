@@ -60,7 +60,7 @@ struct PlainLparseOutputter : LparseOutputter {
 struct OutputBase {
     OutputBase(StmHandler handler);
     OutputBase(std::ostream &out, bool lparse = false);
-    OutputBase(PlainLparseOutputter &out);
+    OutputBase(LparseOutputter &out);
     void output(Value const &val);
     void output(UStm &&x);
     void output(Statement &x);

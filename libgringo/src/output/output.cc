@@ -170,7 +170,7 @@ OutputBase::OutputBase(std::ostream &out, bool lparse) {
     }
     else { handler = [&out](Statement &x) { x.printPlain(out); }; }
 }
-OutputBase::OutputBase(PlainLparseOutputter &out) {
+OutputBase::OutputBase(LparseOutputter &out) {
     std::shared_ptr<unsigned> auxAtoms{std::make_shared<unsigned>(0)};
     handler = [&out, auxAtoms](Statement &x) { 
         x.toLparse(*auxAtoms, [&out](Statement &x) { x.printLparse(out); });
