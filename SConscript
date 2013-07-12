@@ -119,7 +119,7 @@ LIBCLASP_SOURCES = find_files(claspEnv, 'libclasp/src')
 claspEnv.Append(CPPDEFINES={'WITH_THREADS' : '0'})
 claspEnv.StaticLibrary('libclasp', LIBCLASP_SOURCES)
 claspEnv.Append(CPPPATH = [Dir('#libprogram_opts')])
-claspProgram = claspEnv.Program('clasp', CLASP_SOURCES, LIBS=['libclasp', 'libprogram_opts'], LIBSPATH=Dir('.'))
+claspProgram = claspEnv.Program('clasp', CLASP_SOURCES, LIBS=['libclasp', 'libprogram_opts'], LIBPATH=Dir('.'))
 
 # Gringo: Library + Program
 
