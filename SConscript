@@ -132,9 +132,18 @@ LIBGRINGO_SOURCES = find_files(gringoEnv, 'libgringo/src')
 gringoEnv.StaticLibrary('libgringo', LIBGRINGO_SOURCES)
 gringoProgram = gringoEnv.Program('gringo', GRINGO_SOURCES, LIBS=[ 'libgringo' ], LIBPATH=Dir('.'))
 
+# Clingo Program
+clingoEnv = env.Clone()
+clingoEnv['CPPPATH'] = [Dir('#libgringo'), Dir('#libclasp'), Dir('#libprogram_opts')]
+clingoEnv.Append(CPPDEFINES={'WITH_THREADS' : '0'})
+
+CLINGO_SRC = find_files(clingoEnv, 'app/clingo')
+clingoProgram = clingoEnv.Program('clingo', CLINGO_SRC, LIBS=['libclasp', 'libprogram_opts', 'libgringo'], LIBPATH=Dir('.'))
+
 if not env.GetOption('clean'):
     Default(gringoProgram)
     Default(claspProgram)
+    Default(clingoProgram)
 
 # Gringo: UnitTests
 

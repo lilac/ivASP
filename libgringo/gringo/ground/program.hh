@@ -31,6 +31,16 @@ struct Program {
     using ClassicalNegationVec = std::vector<std::tuple<PredicateDomain&, PredicateDomain&, unsigned>>;
 
     Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms);
+    Program() {}
+    Program(Program &&p): edb(std::move(p.edb)), linearized(p.linearized),
+		stms(std::move(p.stms)), negate(std::move(p.negate)) {}
+    Program& operator=(Program&& p) {
+	edb = std::move(p.edb);
+	linearized = p.linearized;
+	stms = std::move(p.stms);
+	negate = std::move(p.negate);
+	return *this;
+    }
     void linearize();
     void ground(Output::OutputBase &out);
  

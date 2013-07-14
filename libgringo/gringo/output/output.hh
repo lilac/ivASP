@@ -61,6 +61,8 @@ struct OutputBase {
     OutputBase(StmHandler handler);
     OutputBase(std::ostream &out, bool lparse = false);
     OutputBase(LparseOutputter &out);
+    OutputBase() = default;
+    void setOutputter(LparseOutputter &out);
     void output(Value const &val);
     void output(UStm &&x);
     void output(Statement &x);
