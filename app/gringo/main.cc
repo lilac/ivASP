@@ -60,6 +60,7 @@ void ground(Gringo::Output::OutputBase &out, std::vector<char const *> files) {
     Ground::Program gPrg(prepare(out, files));
     LOG << "************* intermediate program *************" << std::endl << gPrg << std::endl;
     LOG << "************* grounded program *************" << std::endl;
+    gPrg.linearize(out);
     gPrg.ground(out);
 }
 

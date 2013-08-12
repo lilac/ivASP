@@ -40,7 +40,14 @@ std::ostream &operator<<(std::ostream &out, Program const &p) {
     return out;
 }
 
-void Program::linearize() {
+void Program::linearize(Output::OutputBase &out) {
+    out.checkOutPreds();
+    for (auto &x : edb) { out.output(x); }
+    for (auto &x : out.domains) {
+        x.second->mark();
+        x.second->unmark();
+        x.second->expire();
+    }
     for (auto &x : stms) {
         for (auto &y : x.first) { y->startLinearize(true); }
         for (auto &y : x.first) { y->linearize(x.second); }
@@ -50,20 +57,8 @@ void Program::linearize() {
 }
 
 void Program::ground(Output::OutputBase &out) {
-    out.checkOutPreds();
-    for (auto &x : edb) { out.output(x); }
-    for (auto &x : out.domains) { 
-        x.second->mark(); 
-        x.second->unmark();
-        x.second->expire();
-    }
     Queue q;
     for (auto &x : stms) {
-        if (!linearized) {
-            for (auto &y : x.first) { y->startLinearize(true); }
-            for (auto &y : x.first) { y->linearize(x.second); }
-            for (auto &y : x.first) { y->startLinearize(false); }
-        }
         // std::cerr << "============= component ===========" << std::endl;
         for (auto &y : x.first) { 
             // std::cerr << "  enqueue: " << *y << std::endl;
@@ -94,7 +89,6 @@ void Program::ground(Output::OutputBase &out) {
     }
     out.flush();
     out.finish();
-    linearized = true;
 }
 
 // }}}

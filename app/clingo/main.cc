@@ -83,6 +83,7 @@ GringoInput::GringoInput(StringSeq &files) {
 bool GringoInput::read(ApiPtr api, uint32 properties) {
 	ClaspProgramBuilderOutputter pbo(*api.api);
 	out.setOutputter(pbo);
+	if (!prg.linearized) { prg.linearize(out); }
 	prg.ground(out);
 	pbo.finish(out.domains, out.outPreds); // TODO: examine if this is necessary.
 	return true;

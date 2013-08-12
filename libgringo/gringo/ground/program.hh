@@ -41,7 +41,7 @@ struct Program {
         negate = std::move(p.negate);
         return *this;
     }
-    void linearize();
+    void linearize(Output::OutputBase &out);
     void ground(Output::OutputBase &out);
  
     ValVec                       edb;
