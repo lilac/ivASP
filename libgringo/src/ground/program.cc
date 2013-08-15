@@ -42,6 +42,9 @@ std::ostream &operator<<(std::ostream &out, Program const &p) {
 
 void Program::linearize(Output::OutputBase &out) {
     out.checkOutPreds();
+    for (auto &x : out.domains) {
+        x.second->newLevel();
+    }
     for (auto &x : edb) { out.output(x); }
     for (auto &x : out.domains) {
         x.second->mark();
@@ -88,7 +91,10 @@ void Program::ground(Output::OutputBase &out) {
         std::get<2>(x) = std::get<1>(x).exports.size();
     }
     out.flush();
-    out.finish();
+    out.finish(); // TODO: examine if this needs revision.
+    for (auto &d : out.domains) {
+        d.second->newLevel();
+    }
 }
 
 // }}}

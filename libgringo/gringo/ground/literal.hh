@@ -49,6 +49,7 @@ struct Literal : Printable {
     virtual void collectImportant(Term::VarSet &vars);
     virtual Output::Literal *toOutput() = 0;
     virtual Score score(Term::VarSet const &bound) = 0;
+    virtual bool isNew() { return false; }
     virtual ~Literal() { }
 };
 typedef std::unique_ptr<Literal> ULit;
@@ -68,6 +69,7 @@ struct RangeLiteral : Literal {
     virtual UIdx index(BinderType type, Term::VarSet &bound);
     virtual Output::Literal *toOutput();
     virtual Score score(Term::VarSet const &bound);
+    virtual bool isNew();
     virtual ~RangeLiteral();
 
     UTerm assign;
@@ -87,6 +89,7 @@ struct RelationLiteral : Literal {
     virtual UIdx index(BinderType type, Term::VarSet &bound);
     virtual Output::Literal *toOutput();
     virtual Score score(Term::VarSet const &bound);
+    virtual bool isNew();
     virtual ~RelationLiteral();
 
     RelationShared shared;
@@ -111,6 +114,7 @@ struct PredicateLiteral : Literal, BodyOcc {
     virtual Output::Literal *toOutput();
     virtual Score score(Term::VarSet const &bound);
     virtual void checkDefined(LocSet &done, SigSet const &edb) const;
+    virtual bool isNew();
     virtual ~PredicateLiteral();
 
     OccurrenceType type = OccurrenceType::POSITIVELY_STRATIFIED;

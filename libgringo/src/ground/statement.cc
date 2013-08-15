@@ -750,6 +750,14 @@ void DisjunctionRule::report(Output::OutputBase &out) {
     out.output(std::move(rule));
 }
 void Rule::report(Output::OutputBase &out) {
+	bool fresh = false;
+	for (auto &x : lits) {
+		if (x->isNew()) {
+			fresh = true;
+			break;
+		}
+	}
+	if (!fresh) return;
     Output::RuleRef &rule(out.tempRule);
     rule.body.clear();
     for (auto &x : lits) {

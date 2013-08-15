@@ -167,6 +167,7 @@ struct AbstractDomain : Domain {
     virtual void setEnqueued(bool x) { enqueued = x; }
     virtual bool isEnqueued() const  { return enqueued; }
     virtual bool expire()            { return exports.next(); }
+    virtual void newLevel() { base = exports.size(); }
     virtual ~AbstractDomain();
 
     bind_index_set indices;
@@ -174,6 +175,7 @@ struct AbstractDomain : Domain {
     element_map    domain;
     exports_type   exports;
     bool           enqueued = false;
+    unsigned int   base = 0;
 };
 
 // }}}

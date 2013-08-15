@@ -277,6 +277,11 @@ Literal::Score PredicateLiteral::score(Term::VarSet const &bound) {
 }
 
 // }}}
+// {{{ definition of *Literal::isNew
+bool RangeLiteral::isNew() { return true; }
+bool RelationLiteral::isNew() { return false; }
+bool PredicateLiteral::isNew() { return gLit.repr->second.generation() >= domain.base; }
+// }}}
 // {{{ definition of *Literal::toOutput
 
 Output::Literal *RangeLiteral::toOutput()     { return nullptr; }
