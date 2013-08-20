@@ -163,6 +163,7 @@ void NonGroundGrammar::parser::error(NonGroundGrammar::location const &l, std::s
     COLON       ":"
     COMMA       ","
     CONST       "#const"
+    INCR        "#incr"
     COUNT       "#count"
     CUMULATIVE  "#cumulative"
     DOT         "."
@@ -619,6 +620,7 @@ statement
 
 statement
     : CONST identifier[uid] ASSIGN constterm[rhs] DOT {  BUILDER.define(loc(@$), $uid, $rhs); }
+    | INCR identifier[uid] DOT { BUILDER.incr($uid); }
     ;
 
 // }}}

@@ -30,7 +30,7 @@ namespace Gringo { namespace Ground {
 struct Program {
     using ClassicalNegationVec = std::vector<std::tuple<PredicateDomain&, PredicateDomain&, unsigned>>;
 
-    Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms);
+    Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms, FWString incr);
     Program() {}
     Program(Program &&p): edb(std::move(p.edb)), linearized(p.linearized),
         stms(std::move(p.stms)), negate(std::move(p.negate)) {}
@@ -48,6 +48,8 @@ struct Program {
     bool                         linearized = false;
     Statement::Dep::ComponentVec stms;
     ClassicalNegationVec         negate;
+    FWString incr;
+    unsigned int level = 0;
 };
 
 std::ostream &operator<<(std::ostream &out, Program const &x);

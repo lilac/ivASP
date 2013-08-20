@@ -265,6 +265,7 @@ void NongroundProgramBuilder::show(Location const &loc, TermUid t, BdLitVecUid b
     rule(loc, headlit(predlit(loc, NAF::POS, false, "#show", termvecvec(termvecvec(), termvec(termvec(), t)))), body);
 }
 
+void NongroundProgramBuilder::incr(FWString name) { prg_.incr = name; }
 // }}}
 
 NongroundProgramBuilder::~NongroundProgramBuilder() { }

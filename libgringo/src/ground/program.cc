@@ -25,9 +25,9 @@ namespace Gringo { namespace Ground {
 
 // {{{ definition of Program
 
-Program::Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms)
+Program::Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms, FWString incr)
     : edb(std::move(edb))
-    , stms(std::move(stms)) { }
+    , stms(std::move(stms)), incr(incr) { }
 
 std::ostream &operator<<(std::ostream &out, Program const &p) {
     bool comma = false;
@@ -61,6 +61,7 @@ void Program::linearize(Output::OutputBase &out) {
 
 void Program::ground(Output::OutputBase &out) {
     Queue q;
+    level++;
     for (auto &x : stms) {
         // std::cerr << "============= component ===========" << std::endl;
         for (auto &y : x.first) { 

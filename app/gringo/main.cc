@@ -62,6 +62,7 @@ void ground(Gringo::Output::OutputBase &out, std::vector<char const *> files) {
     LOG << "************* grounded program *************" << std::endl;
     gPrg.linearize(out);
     gPrg.ground(out);
+    gPrg.ground(out);
 }
 
 std::vector<std::string> split(std::string const &source, char const *delimiter = " ", bool keepEmpty = false) {

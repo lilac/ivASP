@@ -44,6 +44,8 @@ public:
     Ground::Program toGround(PredDomMap &domains);
     ~Program();
 
+    FWString  incr;
+
 private:
     void rewriteDots();
     void rewriteArithmetics();
