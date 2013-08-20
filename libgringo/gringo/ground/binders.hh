@@ -154,7 +154,7 @@ inline UIdx make_binder(AbstractDomain<Element> &domain, NAF naf, Term const &re
             VarTermVec occBound;
             for (auto &x : occs) {
                 if (x.first->bindRef)                               { x.first->bindRef = bound.emplace(x.first->name).second; } 
-                else if (occBoundSet.emplace(x.first->name).second) { occBound.emplace_back(*x.first); }
+                else if (occBoundSet.emplace(x.first->name).second) { occBound.emplace_back(*x.first); } // remove duplicates in occBound.
             }
             Term::RenameMap rename;
             UTerm idxClone(predClone->renameVars(rename));
@@ -162,16 +162,16 @@ inline UIdx make_binder(AbstractDomain<Element> &domain, NAF naf, Term const &re
             for (VarTerm &x : occBound) {
                 auto it(rename.find(x.name));
                 predBound.emplace_back(x.ref);
-                idxBound.emplace_back(it->second.second);
+                idxBound.emplace_back(it->second.second); // Isn't it empty Value?
             }
             Term::VarSet empty;
             idxClone->bind(empty);
             if (occBound.empty()) { 
-                auto &idx(domain.add(std::move(idxClone)));
+                auto &idx(domain.add(std::move(idxClone))); // full index.
                 return make_unique<FullPredicateBinder>(std::move(predClone), elem, idx, type);
             }
             else {
-                auto &idx(domain.add(std::move(idxBound), std::move(idxClone)));
+                auto &idx(domain.add(std::move(idxBound), std::move(idxClone))); // partial index based on previous bound values.
                 return make_unique<PosPredicateBinder>(std::move(predClone), elem, idx, type, std::move(predBound));
             }
         }

@@ -43,6 +43,8 @@ struct Literal : Printable {
     using SValVec = Instantiator::SValVec;
     using Score   = double;
     virtual bool isRecursive() const = 0;
+    /** @param bound I/O argument, contains current bound vars.
+     */
     virtual UIdx index(BinderType type, Term::VarSet &bound) = 0;
     virtual BodyOcc *occurrence() = 0;
     virtual void collect(VarTermBoundVec &vars) const = 0;
