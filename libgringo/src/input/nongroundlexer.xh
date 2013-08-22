@@ -77,6 +77,7 @@ start:
 			return NonGroundGrammar::parser::token::SHOWSIG;
 		}
         "#const"         { return NonGroundGrammar::parser::token::CONST; }
+        "#incr"          { return NonGroundGrammar::parser::token::INCR; }
         "#minimi"[zs]"e" { return NonGroundGrammar::parser::token::MINIMIZE; }
         "#maximi"[zs]"e" { return NonGroundGrammar::parser::token::MAXIMIZE; }
         "#base"          { return NonGroundGrammar::parser::token::BASE; }
