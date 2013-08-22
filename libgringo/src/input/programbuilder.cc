@@ -44,8 +44,9 @@ TermUid NongroundProgramBuilder::term(Location const &loc, FWString name) {
     if (*name == "_") { return terms_.insert(make_locatable<VarTerm>(loc, name, nullptr)); }
     else {
         auto &ret(vals_[name]);
+        bool incr = name == prg_.incr;
         if (!ret) { ret = std::make_shared<Value>(); }
-        return terms_.insert(make_locatable<VarTerm>(loc, name, ret));
+        return terms_.insert(make_locatable<VarTerm>(loc, name, ret, 0, false, incr));
     }
 }
 

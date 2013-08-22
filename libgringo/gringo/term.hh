@@ -439,7 +439,7 @@ struct ValTerm : public Term {
 // {{{ declaration of VarTerm
 
 struct VarTerm : Term {
-    VarTerm(FWString name, SVal ref, unsigned level = 0, bool bindRef = false);
+    VarTerm(FWString name, SVal ref, unsigned level = 0, bool bindRef = false, bool incr = false);
     virtual void rename(FWString name);
     virtual SimplifyRet simplify(DotsMap &dots, unsigned &auxNum, bool positional, bool arithmetic);
     virtual ProjectRet project(unsigned &auxNum);
@@ -471,6 +471,7 @@ struct VarTerm : Term {
 	SVal ref;
 	bool bindRef;
     unsigned level;
+    bool incr; // incremental variable
 };
 
 // }}}

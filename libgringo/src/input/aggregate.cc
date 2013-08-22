@@ -706,6 +706,7 @@ namespace {
 // TODO: consider adding a more intelligent parameter to check that does all of this
 void _add(ChkLvlVec &levels, VarTermBoundVec &vars) {
     for (auto &x: vars) { 
+    	if (x.first->incr) continue; // ignore incremental variables.
         auto &lvl(levels[x.first->level]);
         bool bind = x.second && levels.size() == x.first->level + 1;
         if (bind) { lvl.dep.insertEdge(*lvl.current, lvl.var(*x.first)); }
