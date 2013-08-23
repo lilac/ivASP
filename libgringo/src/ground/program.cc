@@ -67,6 +67,9 @@ void Program::ground(Output::OutputBase &out) {
         for (auto &y : x.first) { 
             // std::cerr << "  enqueue: " << *y << std::endl;
             y->enqueue(q);
+            if (y->type() != Statement::STATIC) {
+            	y->groundIncrVar(incr, level);
+            }
         }
         q.process(out);
     }
