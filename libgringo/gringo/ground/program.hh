@@ -29,8 +29,8 @@ namespace Gringo { namespace Ground {
 
 struct Program {
     using ClassicalNegationVec = std::vector<std::tuple<PredicateDomain&, PredicateDomain&, unsigned>>;
-
-    Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms, FWString incr);
+    using UVarTerm = std::unique_ptr<VarTerm>;
+    Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms, UVarTerm &&incr);
     Program() {}
     Program(Program &&p): edb(std::move(p.edb)), linearized(p.linearized),
         stms(std::move(p.stms)), negate(std::move(p.negate)) {}
@@ -43,12 +43,13 @@ struct Program {
     }
     void linearize(Output::OutputBase &out);
     void ground(Output::OutputBase &out);
+    void nextLevel(Output::OutputBase &out);
  
     ValVec                       edb;
     bool                         linearized = false;
     Statement::Dep::ComponentVec stms;
     ClassicalNegationVec         negate;
-    FWString incr;
+    UVarTerm incr;
     unsigned int level = 0;
 };
 

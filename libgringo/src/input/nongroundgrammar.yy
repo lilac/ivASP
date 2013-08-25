@@ -620,7 +620,7 @@ statement
 
 statement
     : CONST identifier[uid] ASSIGN constterm[rhs] DOT {  BUILDER.define(loc(@$), $uid, $rhs); }
-    | INCR identifier[uid] DOT { BUILDER.incr($uid); }
+    | INCR VARIABLE[uid] DOT { BUILDER.incr(loc(@$), $uid); }
     ;
 
 // }}}

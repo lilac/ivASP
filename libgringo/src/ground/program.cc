@@ -25,9 +25,10 @@ namespace Gringo { namespace Ground {
 
 // {{{ definition of Program
 
-Program::Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms, FWString incr)
+Program::Program(ValVec &&edb, Statement::Dep::ComponentVec &&stms, UVarTerm &&incr)
     : edb(std::move(edb))
-    , stms(std::move(stms)), incr(incr) { }
+    , stms(std::move(stms))
+    , incr(std::move(incr)) { }
 
 std::ostream &operator<<(std::ostream &out, Program const &p) {
     bool comma = false;
@@ -42,9 +43,7 @@ std::ostream &operator<<(std::ostream &out, Program const &p) {
 
 void Program::linearize(Output::OutputBase &out) {
     out.checkOutPreds();
-    for (auto &x : out.domains) {
-        x.second->newLevel();
-    }
+    nextLevel(out); // init the 1st level, so that edb is added to it.
     for (auto &x : edb) { out.output(x); }
     for (auto &x : out.domains) {
         x.second->mark();
@@ -61,15 +60,11 @@ void Program::linearize(Output::OutputBase &out) {
 
 void Program::ground(Output::OutputBase &out) {
     Queue q;
-    level++;
     for (auto &x : stms) {
         // std::cerr << "============= component ===========" << std::endl;
         for (auto &y : x.first) { 
             // std::cerr << "  enqueue: " << *y << std::endl;
             y->enqueue(q);
-            if (y->type() != Statement::STATIC) {
-            	y->groundIncrVar(incr, level);
-            }
         }
         q.process(out);
     }
@@ -96,11 +91,15 @@ void Program::ground(Output::OutputBase &out) {
     }
     out.flush();
     out.finish(); // TODO: examine if this needs revision.
-    for (auto &d : out.domains) {
-        d.second->newLevel();
-    }
+    nextLevel(out);
 }
 
+void Program::nextLevel(Output::OutputBase &out) {
+    for (auto &x : out.domains) {
+        x.second->newLevel();
+    }
+    if (incr) *incr->ref = Value(static_cast<int>(level++));
+}
 // }}}
 
 } } // namespace Ground Gringo

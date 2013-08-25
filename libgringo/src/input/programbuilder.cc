@@ -45,7 +45,8 @@ TermUid NongroundProgramBuilder::term(Location const &loc, FWString name) {
     else {
         auto &ret(vals_[name]);
         bool incr = name == prg_.incr;
-        if (!ret) { ret = std::make_shared<Value>(); }
+        if (incr) ret = prg_.incrVar->ref;
+        else if (!ret) { ret = std::make_shared<Value>(); }
         return terms_.insert(make_locatable<VarTerm>(loc, name, ret, 0, false, incr));
     }
 }
@@ -266,7 +267,11 @@ void NongroundProgramBuilder::show(Location const &loc, TermUid t, BdLitVecUid b
     rule(loc, headlit(predlit(loc, NAF::POS, false, "#show", termvecvec(termvecvec(), termvec(termvec(), t)))), body);
 }
 
-void NongroundProgramBuilder::incr(FWString name) { prg_.incr = name; }
+void NongroundProgramBuilder::incr(Location const &loc, FWString name) {
+    prg_.incr = name;
+    auto val = std::make_shared<Value>();
+    prg_.incrVar = make_locatable<VarTerm>(loc, name, val, 0, false, true);
+}
 // }}}
 
 NongroundProgramBuilder::~NongroundProgramBuilder() { }

@@ -142,7 +142,7 @@ Ground::Program Program::toGround(PredDomMap &domains) {
             domains.emplace_back(std::piecewise_construct, std::forward_as_tuple(x.sig()), std::forward_as_tuple());
         }
     }
-    Ground::Program prg(std::move(edb_), dep.analyze(), incr);
+    Ground::Program prg(std::move(edb_), dep.analyze(), std::move(incrVar));
     // TODO: an iterator for this little monstrosity would be nice
     for (auto &x : dep.depend.occs) {
         for (auto &y : x.second.first->depend) { (*std::get<0>(y)).checkDefined(locs, sigs); }

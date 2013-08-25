@@ -1183,6 +1183,7 @@ InstVec linearize(bool positive, SolutionCallback &cb, Term::VarSet &&important,
             VarTermBoundVec vars;
             lit.second->collect(vars);
             for (auto &occ : vars) {
+                if (occ.first->incr) continue; // ignore incremental vars.
                 auto &varNode(varMap[occ.first->name]);
                 if (!varNode)   { 
                     varNode = &s.insertVar(boundBy.size());

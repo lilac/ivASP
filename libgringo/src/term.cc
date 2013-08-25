@@ -1500,11 +1500,12 @@ ValTerm::~ValTerm() { }
 // }}}
 // {{{ definition of VarTerm
 
-VarTerm::VarTerm(FWString name, SVal ref, unsigned level, bool bindRef)
+VarTerm::VarTerm(FWString name, SVal ref, unsigned level, bool bindRef, bool incr)
     : name(name) 
     , ref(ref)
     , bindRef(bindRef)
-    , level(level) { assert(ref || *name == "_"); }
+    , level(level)
+    , incr(incr) { assert(ref || *name == "_"); }
 
 VarTerm::~VarTerm() { }
 

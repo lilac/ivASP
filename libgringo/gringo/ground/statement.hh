@@ -384,8 +384,7 @@ struct Statement : Printable {
     virtual void startLinearize(bool active) = 0;
     virtual void linearize(bool positive) = 0;
     virtual void enqueue(Queue &q) = 0;
-    virtual Type type(Context ctx) { return STATIC; }
-    virtual void groundIncrVar(Context ctx, unsigned int level); // ground the incremental variable.
+    virtual Type type() { return STATIC; }
     virtual ~Statement() { }
 };
 
@@ -635,8 +634,7 @@ struct Rule : Statement, SolutionCallback {
     virtual void report(Output::OutputBase &out);
     virtual void unmark(Queue &queue);
     virtual void printHead(std::ostream &out) const;
-    virtual Type type(Context ctx) { return STATIC; }
-    virtual void groundIncrVar(Context ctx, unsigned int level);
+    virtual Type type() { return STATIC; }
     virtual ~Rule();
 
     PredicateDomain *domain; // TODO: should go into defines

@@ -1,5 +1,5 @@
-#incr c.
-col(1..c).
+#incr K.
+col(1..K).
 
 color(X, C) :- node(X), col(C), not ocolor(X, C).
 ocolor(X, C) :- color(X, C1), col(C), C != C1.

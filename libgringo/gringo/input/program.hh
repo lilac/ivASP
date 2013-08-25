@@ -45,6 +45,7 @@ public:
     ~Program();
 
     FWString  incr;
+    std::unique_ptr<VarTerm> incrVar;
 
 private:
     void rewriteDots();

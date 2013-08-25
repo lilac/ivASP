@@ -115,7 +115,7 @@ public:
     virtual void optimize(Location const &loc, TermUid weight, TermUid priority, TermVecUid cond, BdLitVecUid body) = 0;
     virtual void showsig(Location const &loc, FWSignature x) = 0;
     virtual void show(Location const &loc, TermUid t, BdLitVecUid body) = 0;
-    virtual void incr(FWString name) = 0;
+    virtual void incr(Location const &loc, FWString name) = 0;
     // }}}
     virtual ~INongroundProgramBuilder() { }
 };
@@ -207,7 +207,7 @@ public:
     virtual void optimize(Location const &loc, TermUid weight, TermUid priority, TermVecUid cond, BdLitVecUid body);
     virtual void showsig(Location const &loc, FWSignature x);
     virtual void show(Location const &loc, TermUid t, BdLitVecUid body);
-    virtual void incr(FWString name);
+    virtual void incr(Location const &loc, FWString name);
     // }}}
     virtual ~NongroundProgramBuilder();
     
