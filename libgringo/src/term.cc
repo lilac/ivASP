@@ -972,7 +972,7 @@ bool Term::bind(VarSet &bound) {
     collect(occs, false);
     bool ret = false;
     for (auto &x : occs) { 
-        if ((x.first->bindRef = bound.insert(x.first->name).second)) { ret = true; }
+        if (!x.first->incr && (x.first->bindRef = bound.insert(x.first->name).second)) { ret = true; }
     }
     return ret;
 }
