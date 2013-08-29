@@ -98,7 +98,7 @@ void Program::nextLevel(Output::OutputBase &out) {
     for (auto &x : out.domains) {
         x.second->newLevel();
     }
-    if (incr) *incr->ref = Value(static_cast<int>(level++));
+    if (incr) *incr->ref = Value(static_cast<int>(++level));
 }
 // }}}
 

@@ -1158,7 +1158,7 @@ ValTerm *ValTerm::clone() const {
     return make_locatable<ValTerm>(loc(), value).release();
 }
 VarTerm *VarTerm::clone() const {
-    return make_locatable<VarTerm>(loc(), name, ref, level, bindRef).release();
+    return make_locatable<VarTerm>(loc(), name, ref, level, bindRef, incr).release();
 }
 LinearTerm *LinearTerm::clone() const {
     return make_locatable<LinearTerm>(loc(), *var, m, n).release();
