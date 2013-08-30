@@ -297,6 +297,73 @@ Output::Literal *PredicateLiteral::toOutput() {
 }
 
 // }}}
+// {{{ definition of Literal::type
+Literal::Type Literal::incrType() const {
+	return Literal::STATIC;
+}
+Literal::Type RangeLiteral::incrType() const {
+	VarTermBoundVec vars;
+	range.first->collect(vars, false);
+	for (auto &y : vars) {
+		if (y.first->incr) {
+			return Literal::VOLATILE;
+		}
+	}
+	vars.clear();
+	range.second->collect(vars, false);
+	for (auto &x : vars) {
+		if (x.first->incr) {
+			return Literal::CUMULATIVE;
+		}
+	}
+	return Literal::STATIC;
+}
+Literal::Type RelationLiteral::incrType() const {
+	/* NOTE: Here I assume there is no minus signs before the incremental var,
+	 * in other words, arithmetic expressions involving the incr var is monotonically
+	 * increasing.
+	 */
+	VarTermBoundVec lvars, rvars;
+	bool lincr = false, rincr = false;
+	Relation rel = std::get<0>(shared);
+	std::get<1>(shared)->collect(lvars, false);
+	std::get<2>(shared)->collect(rvars, false);
+	for (auto &x : lvars) {
+		if (x.first->incr) {
+			lincr = true;
+			break;
+		}
+	}
+	for (auto &y : rvars) {
+		if (y.first->incr) {
+			rincr = true;
+			break;
+		}
+	}
+	if (lincr) {
+		if (rel == Relation::GT || rel == Relation::GEQ) {
+			return Literal::CUMULATIVE;
+		} else {
+			return Literal::VOLATILE;
+		}
+	} else if (rincr) {
+		if (rel == Relation::LT || rel == Relation::LEQ) {
+			return Literal::CUMULATIVE;
+		} else {
+			return Literal::VOLATILE;
+		}
+	} else { return Literal::STATIC; }
+}
+Literal::Type PredicateLiteral::incrType() const {
+	VarTermBoundVec vars;
+	collect(vars);
+	for (auto &x : vars) {
+		if (x.first->incr) return Literal::VOLATILE;
+	}
+	return Literal::STATIC;
+}
+
+// }}}
 // {{{ definition of *Literal::~*Literal
 
 RangeLiteral::~RangeLiteral() { }

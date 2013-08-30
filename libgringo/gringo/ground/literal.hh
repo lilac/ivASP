@@ -40,6 +40,11 @@ struct HeadOccurrence {
 
 typedef BodyOccurrence<HeadOccurrence> BodyOcc;
 struct Literal : Printable {
+	enum Type {
+		STATIC,
+		CUMULATIVE,
+		VOLATILE
+	};
     using SValVec = Instantiator::SValVec;
     using Score   = double;
     virtual bool isRecursive() const = 0;
@@ -50,6 +55,7 @@ struct Literal : Printable {
     virtual Output::Literal *toOutput() = 0;
     virtual Score score(Term::VarSet const &bound) = 0;
     virtual bool isNew() { return false; }
+    virtual Type incrType() const;
     virtual ~Literal() { }
 };
 typedef std::unique_ptr<Literal> ULit;
@@ -70,6 +76,7 @@ struct RangeLiteral : Literal {
     virtual Output::Literal *toOutput();
     virtual Score score(Term::VarSet const &bound);
     virtual bool isNew();
+    virtual Type incrType() const;
     virtual ~RangeLiteral();
 
     UTerm assign;
@@ -90,6 +97,7 @@ struct RelationLiteral : Literal {
     virtual Output::Literal *toOutput();
     virtual Score score(Term::VarSet const &bound);
     virtual bool isNew();
+    virtual Type incrType() const;
     virtual ~RelationLiteral();
 
     RelationShared shared;
@@ -115,6 +123,7 @@ struct PredicateLiteral : Literal, BodyOcc {
     virtual Score score(Term::VarSet const &bound);
     virtual void checkDefined(LocSet &done, SigSet const &edb) const;
     virtual bool isNew();
+    virtual Type incrType() const;
     virtual ~PredicateLiteral();
 
     OccurrenceType type = OccurrenceType::POSITIVELY_STRATIFIED;

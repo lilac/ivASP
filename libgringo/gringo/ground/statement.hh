@@ -372,19 +372,14 @@ typedef std::vector<UStm> UStmVec;
 typedef std::vector<UStmVec> UStmVecVec;
 
 struct Statement : Printable {
-	enum Type {
-		STATIC,
-		CUMULATIVE,
-		VOLATILE
-	};
-	typedef FWString Context; // incremental variable name
+	using Type = Literal::Type;
     typedef Dependency<UStm, HeadOccurrence> Dep;
     virtual bool isNormal() const = 0;
     virtual void analyze(Dep::Node &node, Dep &dep) = 0;
     virtual void startLinearize(bool active) = 0;
     virtual void linearize(bool positive) = 0;
     virtual void enqueue(Queue &q) = 0;
-    virtual Type type() { return STATIC; }
+    virtual Type type() const { return Literal::STATIC; }
     virtual ~Statement() { }
 };
 
@@ -634,7 +629,7 @@ struct Rule : Statement, SolutionCallback {
     virtual void report(Output::OutputBase &out);
     virtual void unmark(Queue &queue);
     virtual void printHead(std::ostream &out) const;
-    virtual Type type() { return STATIC; }
+    virtual Statement::Type type() const;
     virtual ~Rule();
 
     PredicateDomain *domain; // TODO: should go into defines

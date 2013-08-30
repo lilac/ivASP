@@ -1504,6 +1504,20 @@ void WeakConstraint::print(std::ostream &out) const {
     printHead(out);
 }
 
+Statement::Type Rule::type() const {
+	bool cumulative = false;
+	for (auto &x : lits) {
+		if (x->incrType() == Literal::VOLATILE) {
+			return Literal::VOLATILE;
+		} else if (x->incrType() == Literal::CUMULATIVE) {
+			cumulative = true;
+			continue;
+		}
+	}
+	if (cumulative) return Literal::CUMULATIVE;
+	else return Literal::STATIC;
+}
+
 // }}}
 // {{{ definition of *Statement::~*Statement
 
