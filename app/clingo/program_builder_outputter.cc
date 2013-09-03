@@ -88,10 +88,11 @@ unsigned ClaspProgramBuilderOutputter::newUid() {
 void ClaspProgramBuilderOutputter::finishRules() {
 }
 
-void ClaspProgramBuilderOutputter::printSymbol(unsigned atomUid, Gringo::Value v) {
+void ClaspProgramBuilderOutputter::printSymbol(unsigned atomUid, Gringo::Value v, bool lr) {
 	std::stringstream ss;
 	ss << v;
 	pb.setAtomName(atomUid, ss.str().c_str());
+	// TODO: pb.setUnsafe().
 }
 
 void ClaspProgramBuilderOutputter::finishSymbols() {

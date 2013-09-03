@@ -63,7 +63,7 @@ struct LparseRule : Statement {
     LparseRule(ULit &&b1, ULit &&b2);
     LparseRule(SAuxAtom head, ULit &&b1, ULit &&b2);
     LparseRule(PredicateDomain::element_type &head, ULit &&b1, ULit &&b2 = nullptr);
-    LparseRule(SAuxAtom head, ULitVec &&body);
+    LparseRule(SAuxAtom head, ULitVec &&body, bool choice = false);
     LparseRule(SAuxAtomVec &&head, ULitVec &&body);
     LparseRule(PredicateDomain::element_type &head, ULitVec &&body);
     LparseRule(HeadVec &&head, SAuxAtomVec &&auxHead, ULitVec &&body, bool choice);

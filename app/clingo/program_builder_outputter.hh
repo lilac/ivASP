@@ -23,7 +23,7 @@ struct ClaspProgramBuilderOutputter : LparseOutputter {
 	virtual unsigned falseUid();
 	virtual unsigned newUid();
 	virtual void finishRules();
-	virtual void printSymbol(unsigned atomUid, Gringo::Value v);
+	virtual void printSymbol(unsigned atomUid, Gringo::Value v, bool lr = false);
 	virtual void finishSymbols();
 	virtual ~ClaspProgramBuilderOutputter() {}
 

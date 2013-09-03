@@ -43,7 +43,7 @@ std::ostream &operator<<(std::ostream &out, Program const &p) {
 
 void Program::linearize(Output::OutputBase &out) {
     out.checkOutPreds();
-    nextLevel(out); // init the 1st level, so that edb is added to it.
+    initLevel(out); // init the 1st level, so that edb is added to it.
     for (auto &x : edb) { out.output(x); }
     for (auto &x : out.domains) {
         x.second->mark();
@@ -60,6 +60,7 @@ void Program::linearize(Output::OutputBase &out) {
 
 void Program::ground(Output::OutputBase &out) {
     Queue q;
+    if (level > 1) initLevel(out);
     for (auto &x : stms) {
         // std::cerr << "============= component ===========" << std::endl;
         for (auto &y : x.first) { 
@@ -91,14 +92,15 @@ void Program::ground(Output::OutputBase &out) {
     }
     out.flush();
     out.finish(); // TODO: examine if this needs revision.
-    nextLevel(out);
+    level++;
 }
 
-void Program::nextLevel(Output::OutputBase &out) {
+void Program::initLevel(Output::OutputBase &out) {
     for (auto &x : out.domains) {
         x.second->newLevel();
     }
-    if (incr) *incr->ref = Value(static_cast<int>(++level));
+    if (incr) *incr->ref = Value(static_cast<int>(level));
+    out.nextLevel(level);
 }
 // }}}
 

@@ -47,7 +47,7 @@ struct LparseOutputter {
     virtual void printMinimize(LitWeightVec const &body) = 0;
     virtual void printDisjunctiveRule(AtomVec const &atoms, LitVec const &body) = 0;
     virtual void finishRules() = 0;
-    virtual void printSymbol(unsigned atomUid, Value v) = 0;
+    virtual void printSymbol(unsigned atomUid, Value v, bool lr = false) = 0;
     virtual void finishSymbols() = 0;
     void finish(PredDomMap &domains, OutputPredicates &outPreds) {
         finishRules();

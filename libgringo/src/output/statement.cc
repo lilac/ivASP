@@ -160,7 +160,7 @@ LparseRule::LparseRule(PredicateDomain::element_type &head, ULit &&b1, ULit &&b2
     if (b1) { body.emplace_back(std::move(b1)); }
     if (b2) { body.emplace_back(std::move(b2)); }
 }
-LparseRule::LparseRule(SAuxAtom head, ULitVec &&body) : choice(false), body(std::move(body)) {
+LparseRule::LparseRule(SAuxAtom head, ULitVec &&body, bool choice) : choice(choice), body(std::move(body)) {
     assert(head);
     auxHead.emplace_back(head);
 }

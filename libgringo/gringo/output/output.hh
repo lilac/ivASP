@@ -49,7 +49,7 @@ struct PlainLparseOutputter : LparseOutputter {
     virtual unsigned falseUid();
     virtual unsigned newUid();
     virtual void finishRules();
-    virtual void printSymbol(unsigned atomUid, Value v);
+    virtual void printSymbol(unsigned atomUid, Value v, bool lr = false);
     virtual void finishSymbols();
     virtual ~PlainLparseOutputter();
 
@@ -69,6 +69,7 @@ struct OutputBase {
     void flush();
     void finish();
     void checkOutPreds();
+    void nextLevel(unsigned level);
 
     ValVec            tempVals;
     LitVec            tempLits;
@@ -78,6 +79,7 @@ struct OutputBase {
     Minimize          minimize;
     StmHandler        handler;
     OutputPredicates  outPreds;
+    SAuxAtom auxAtom; // auxiliary literal for previous and current levels
 };
 
 } } // namespace Output Gringo

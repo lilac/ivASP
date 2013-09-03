@@ -763,6 +763,10 @@ void Rule::report(Output::OutputBase &out) {
     for (auto &x : lits) {
         if (auto lit = x->toOutput()) { rule.body.emplace_back(*lit); }
     }
+    if (type() == Statement::Type::VOLATILE) {
+    	auto lit = std::make_unique<Output::AuxLiteral>(out.auxAtom, true);
+        rule.body.emplace_back(*lit);
+    }
     if (defines) {
         auto ret(domain->insert(defines->repr->eval(), rule.body.empty()));
         if (!std::get<2>(ret)) {

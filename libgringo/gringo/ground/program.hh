@@ -43,14 +43,14 @@ struct Program {
     }
     void linearize(Output::OutputBase &out);
     void ground(Output::OutputBase &out);
-    void nextLevel(Output::OutputBase &out);
+    void initLevel(Output::OutputBase &out);
  
     ValVec                       edb;
     bool                         linearized = false;
     Statement::Dep::ComponentVec stms;
     ClassicalNegationVec         negate;
     UVarTerm incr;
-    unsigned int level = 0;
+    unsigned int level = 1;
 };
 
 std::ostream &operator<<(std::ostream &out, Program const &x);

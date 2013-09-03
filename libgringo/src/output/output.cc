@@ -153,7 +153,7 @@ void PlainLparseOutputter::printDisjunctiveRule(AtomVec const &head, LitVec cons
 unsigned PlainLparseOutputter::falseUid()                                   { return 1; }
 unsigned PlainLparseOutputter::newUid()                                     { return uids++; }
 void PlainLparseOutputter::finishRules()                                    { out << "0\n"; }
-void PlainLparseOutputter::printSymbol(unsigned atomUid, Value v)           { out << atomUid << " " << v << "\n"; }
+void PlainLparseOutputter::printSymbol(unsigned atomUid, Value v, bool lr)  { out << atomUid << " " << v << " " << lr << "\n"; }
 void PlainLparseOutputter::finishSymbols()                                  { out << "0\nB+\n0\nB-\n" << falseUid() << "\n0\n1\n"; }
 PlainLparseOutputter::~PlainLparseOutputter()                               { }
 
@@ -218,7 +218,17 @@ void OutputBase::checkOutPreds() {
         }
     }
 }
-
+void OutputBase::nextLevel(unsigned level) {
+	if (auxAtom) {
+		ULitVec lit;
+		lit.emplace_back(std::make_unique<AuxLiteral>(auxAtom, true));
+		LparseRule flip(std::move(lit));
+		output(flip); // like the rule ":- auxAtom."
+	}
+	auxAtom.reset(new AuxAtom(level)); // update the auxAtom.
+	LparseRule c(auxAtom, ULitVec(), true); // choice rule
+	output(c); // {auxAtom} :- .
+}
 // }}}
 
 } } // namespace Output Gringo
