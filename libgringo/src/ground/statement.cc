@@ -751,20 +751,21 @@ void DisjunctionRule::report(Output::OutputBase &out) {
 }
 void Rule::report(Output::OutputBase &out) {
 	bool fresh = false;
+	bool volat = type() == Statement::Type::VOLATILE;
 	for (auto &x : lits) {
 		if (x->isNew()) {
 			fresh = true;
 			break;
 		}
 	}
-	if (!fresh) return;
+	if (!fresh && !volat) return;
     Output::RuleRef &rule(out.tempRule);
     rule.body.clear();
     for (auto &x : lits) {
         if (auto lit = x->toOutput()) { rule.body.emplace_back(*lit); }
     }
-    if (type() == Statement::Type::VOLATILE) {
-    	auto lit = std::make_unique<Output::AuxLiteral>(out.auxAtom, true);
+    if (volat) {
+        auto lit = std::make_unique<Output::AuxLiteral>(out.auxAtom, true);
         rule.body.emplace_back(*lit);
     }
     if (defines) {
@@ -1510,6 +1511,13 @@ void WeakConstraint::print(std::ostream &out) const {
 
 Statement::Type Rule::type() const {
 	bool cumulative = false;
+	if (defines) {
+		VarTermBoundVec vars;
+		defines->repr->collect(vars, false);
+		for (auto &x : vars) {
+			if (x.first->incr) return Literal::VOLATILE;
+		}
+	}
 	for (auto &x : lits) {
 		if (x->incrType() == Literal::VOLATILE) {
 			return Literal::VOLATILE;
