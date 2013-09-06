@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2012, Benjamin Kaufmann
+// Copyright (c) 2006-2009, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -20,154 +20,118 @@
 #include <clasp/clasp_facade.h>
 #include <clasp/model_enumerators.h>
 #include <clasp/cb_enumerator.h>
-#include <clasp/weight_constraint.h>
-#include <clasp/minimize_constraint.h>
-#include <clasp/parallel_solve.h>
-#include <stdio.h>
+#include <clasp/smodels_constraints.h>
+#include <iostream>
 namespace Clasp {
-/////////////////////////////////////////////////////////////////////////////////////////
-// GlobalOptions
-/////////////////////////////////////////////////////////////////////////////////////////
-GlobalOptions::GlobalOptions() { }
 
-Enumerator* GlobalOptions::createEnumerator(Enumerator::Report* r) {
+ApiOptions::ApiOptions()
+	: transExt(ProgramBuilder::mode_native)
+	, loopRep(DefaultUnfoundedCheck::common_reason)
+	, eq(5)
+	, backprop(false)
+	, eqDfs(false)
+	, supported(false) {
+}
+
+ProgramBuilder* ApiOptions::createApi(AtomIndex& index) {
+	ProgramBuilder* api = new ProgramBuilder();
+	api->setExtendedRuleMode(transExt);
+	api->setEqOptions((uint32)eq, eqDfs);
+	api->startProgram(index
+		, supported ? 0 : new DefaultUnfoundedCheck(loopRep));
+	return api;
+}
+
+EnumerateOptions::EnumerateOptions() 
+	: numModels(-1)
+	, projectOpts(7)
+	, project(false)
+	, record(false)
+	, restartOnModel(false)
+	, brave(false)
+	, cautious(false) {
+}
+
+Enumerator* EnumerateOptions::createEnumerator() const {
 	ModelEnumerator* e = 0;
 	Enumerator* ret    = 0;
 	if (consequences()) {
-		ret = new CBConsequences(enumerate.mode == enum_brave ? CBConsequences::brave_consequences : CBConsequences::cautious_consequences);
+		ret = new CBConsequences(brave ? CBConsequences::brave_consequences : CBConsequences::cautious_consequences);
 	}
-	else if (enumerate.mode == enum_record) {
+	else if (record) {
 		ret = (e = new RecordEnumerator());
 	}
 	else {
-		ret = (e = new BacktrackEnumerator(enumerate.projectOpts));
+		ret = (e = new BacktrackEnumerator(projectOpts));
 	}
-	if (e) { e->setEnableProjection(enumerate.project); }
-	ret->setRestartOnModel(enumerate.restartOnModel);
-	ret->setReport(r);
+	if (e) { e->setEnableProjection(project); }
+	ret->setRestartOnModel(restartOnModel);
 	return ret;
 }
-/////////////////////////////////////////////////////////////////////////////////////////
-// ClaspConfig
-/////////////////////////////////////////////////////////////////////////////////////////
-ClaspConfig::ClaspConfig()  { addSolver(ctx.master()); }
-ClaspConfig::~ClaspConfig() {
-	setMaxSolvers(1);
-	delete solvers_.back();
-	solvers_.clear();
-}
-void ClaspConfig::reserveSolvers(uint32 num) {
-	ctx.setSolvers(num);
-	solvers_.reserve(num);
-}
-void ClaspConfig::addSolver(Solver* s) {
-	std::auto_ptr<Solver> x(s);
-	s->setId(solvers_.size());
-	s->strategies().heuId   = heu_berkmin;
-	s->strategies().heuOther= 3;
-	s->strategies().heuMoms = 1;
-	solvers_.push_back(new SolverConfig(*x.get()));
-	x.release();
-	if (solvers_.size() > ctx.numSolvers()) { ctx.setSolvers(solvers_.size()); }
-}
-uint32 ClaspConfig::removeSolvers(uint32 id) {
-	uint32 j = 1;
-	for (uint32 i = 1; i != numSolvers(); ++i) {
-		Solver* s = solvers_[i]->solver;
-		if (s->id() >= id) { delete s; delete solvers_[i]; }
-		else               { s->setId(j); solvers_[j++] = solvers_[i]; }
-	}
-	solvers_.resize(j);
-	ctx.setSolvers(j);
-	return j;
+
+HeuristicOptions::HeuristicOptions() 
+	: heuristic("berkmin")
+	, lookahead(Lookahead::no_lookahead)
+	, lookaheadNum(-1)
+	, loops(-1)
+	, berkMoms(true)
+	, berkHuang(false) {
+		extra.berkMax = -1;
 }
 
-bool ClaspConfig::validate(SolverConfig& sc, std::string& err) {
-	if (sc.solver->strategies().search == SolverStrategies::no_learning) {
-		if (sc.solver->strategies().heuId != heu_unit && sc.solver->strategies().heuId != heu_none) {
-			err  = "Selected heuristic requires lookback strategy!";
-			return false;
-		}
-		SolverStrategies* s = &sc.solver->strategies();
-		s->ccMinAntes  = SolverStrategies::no_antes;
-		s->strRecursive= 0;
-		s->compress    = UINT32_MAX;
-		s->saveProgress= 0;
-		sc.params.restart.disable();
-		sc.params.reduce.disable();
+DecisionHeuristic* HeuristicOptions::createHeuristic() const {
+	DecisionHeuristic* heu = 0;
+	if (heuristic == "berkmin") {
+		bool   l = loops == -1 || loops == 1;
+		uint32 m = extra.berkMax < 0 ? 0 : extra.berkMax;
+		heu = new ClaspBerkmin(m, l, berkMoms, berkHuang);
 	}
-	if (sc.params.restart.sched.disabled()) { sc.params.restart.disable(); }
-	if (sc.params.reduce.fReduce() == 0.0f) { sc.params.reduce.disable();  }
-	if (sc.params.reduce.fMax != 0.0f)      { sc.params.reduce.fMax = std::max(sc.params.reduce.fMax, sc.params.reduce.fInit); }
-	return true;
+	else if (heuristic == "vmtf") {
+		uint32 m = extra.vmtfMtf < 0 ? 8 : extra.vmtfMtf;
+		heu = new ClaspVmtf( m, loops == 1);
+	}
+	else if (heuristic == "vsids") {
+		heu = new ClaspVsids(loops == 1);
+	}
+	else if (heuristic == "none") {
+		heu = new SelectFirst();
+	}
+	if (lookahead != Lookahead::no_lookahead || lookaheadNum != -1) {
+		return new UnitHeuristic(lookahead, nant, heu, lookaheadNum);
+	}
+	return heu;
 }
 
 bool ClaspConfig::validate(std::string& err) {
-	if (enumerate.mode == enum_bt && enumerate.restartOnModel) { 
-		err = "Options 'restart-on-model' and 'enum-mode=bt' are mutually exclusive!";
+	if (!solver) {
+		err = "Solver not set!";
 		return false;
 	}
-	for (uint32 i = 0; i != numSolvers(); ++i) {
-		if (!validate(*getSolver(i), err)) { return false; }
+	if (enumerate.brave && enumerate.cautious) {
+		err = "Options 'brave' and 'cautious' are mutually exclusive!";
+		return false;
+	}
+	if (enumerate.restartOnModel) { enumerate.record  = true; }
+	if (solver && solver->strategies().search == SolverStrategies::no_learning) {
+		if (heuristic.heuristic != "unit" && heuristic.heuristic != "none") {
+			err = "Selected heuristic requires lookback strategy!";
+			return false;
+		}
+		SolverStrategies* s = &solver->strategies();
+		s->cflMinAntes = SolverStrategies::no_antes;
+		s->setCompressionStrategy(0);
+		s->saveProgress = 0;
+		solve.restart.setStrategy(0, 0, 0);
+		solve.reduce.setStrategy(-1.0, 0.0, 0.0);
+		solve.setRandomizeParams(0,0);
+		solve.setShuffleParams(0,0);
+		solve.restart.local = solve.restart.bounded = solve.reduce.reduceOnRestart = false;
 	}
 	return true;
 }
 
-DecisionHeuristic* ClaspConfig::createHeuristic(const SolverStrategies& str) {
-	uint32 heuParam = str.heuParam;
-	uint32 id       = str.heuId;
-	if      (id == heu_berkmin) { return new ClaspBerkmin(heuParam); }
-	else if (id == heu_vmtf)    { return new ClaspVmtf(heuParam == 0 ? 8 : heuParam); }
-	else if (id == heu_none)    { return new SelectFirst(); }
-	else if (id == heu_unit)    { 
-		if (heuParam == 0 || heuParam > Lookahead::hybrid_lookahead) { heuParam = Lookahead::atom_lookahead; }
-		return new UnitHeuristic((LookaheadType)heuParam); 
-	}
-	else if (id == heu_vsids)   {
-		double m = heuParam == 0 ? 0.95 : heuParam;
-		while (m > 1.0) { m /= 10; }
-		return new ClaspVsids(m);
-	}
-	throw std::runtime_error("Unknown heuristic id!");
-}
-
-void ClaspConfig::applyHeuristic(SolverConfig& sc) {
-	Lookahead::Type lookT = (Lookahead::Type)sc.params.init.lookType;
-	HeuristicType heuType = (HeuristicType)sc.solver->strategies().heuId;
-	bool          lookHeu = heuType == heu_unit;
-	// check for unrestricted lookahead
-	if (lookHeu || (lookT != Lookahead::no_lookahead && sc.params.init.lookOps == 0)) {
-		sc.params.init.lookType = Lookahead::no_lookahead;
-		sc.params.init.lookOps  = 0;
-		if (!lookHeu) { sc.solver->addPost(new Lookahead(lookT)); }
-		else          { sc.solver->strategies().heuParam = lookT != Lookahead::no_lookahead ? lookT : Lookahead::atom_lookahead; }
-	}
-	sc.solver->setHeuristic(heuType, createHeuristic(sc.solver->strategies()));
-}
-
-void ClaspConfig::applyHeuristic() {
-	if (SolverStrategies::heuFactory_s == 0) {
-		SolverStrategies::heuFactory_s = &ClaspConfig::createHeuristic;
-	}
-	for (uint32 i = 0; i != numSolvers(); ++i) {
-		applyHeuristic(*getSolver(i));
-	}
-}
-
-void ClaspConfig::reset() {
-	ctx.reset();
-	solve    = SolveOptions();
-	eq       = EqOptions();
-	opt      = Optimize();
-	enumerate= EnumOptions();
-	master()->solver = ctx.master();
-	for (uint32 i = 1; i < numSolvers(); ++i) {
-		getSolver(i)->solver->reset();
-	}
-}
-
-IncrementalControl::IncrementalControl()  {}
-IncrementalControl::~IncrementalControl() {}
+IncrementalControl::IncrementalControl() {}
+IncrementalControl::~IncrementalControl(){}
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClaspFacade
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -176,294 +140,246 @@ ClaspFacade::ClaspFacade()
 	, inc_(0)
 	, cb_(0)
 	, input_(0)
-	, ctrl_(0)
-	, graph_(0)
-	, enum_(0)
 	, api_(0)
 	, result_(result_unknown)
-	, state_(num_states)
+	, state_(state_not_started)
 	, step_(0)
 	, more_(true) {
 }
 
 void ClaspFacade::init(Input& problem, ClaspConfig& config, IncrementalControl* inc, Callback* c) {
-	config_ = &config;
-	inc_    = inc;
-	cb_     = c;
-	input_  = &problem;
-	ctrl_   = 0;
-	graph_  = 0;
-	enum_   = config.enumerate.mode != GlobalOptions::enum_auto ? config.createEnumerator(this) : 0;
-	api_    = 0;
-	result_ = result_unknown;
-	state_  = num_states;
-	step_   = 0;
-	more_   = true;
+	assert(config.solver && "ClaspFacade: solver not set!\n");
+	config_       = &config;
+	inc_          = inc;
+	cb_           = c;
+	input_        = &problem;
+	result_       = result_unknown;
+	state_        = state_not_started;
+	step_         = 0;
+	more_         = true;
 	validateWeak();
-	config.applyHeuristic();
-}
-
-void ClaspFacade::validateWeak(ClaspConfig& cfg) {
-	if (cfg.numSolvers() > cfg.solve.supportedSolvers()) {
-		warning("Too many solvers.");
-		cfg.setMaxSolvers(cfg.solve.supportedSolvers());
-	}
-	bool warnUnit = true;
-	bool warnInit = true;
-	for (uint32 i = 0; i != cfg.numSolvers(); ++i) {
-		if (cfg.getSolver(i)->solver->strategies().heuId == ClaspConfig::heu_unit) {
-			InitParams& p = cfg.getSolver(i)->params.init;
-			if (p.lookType == Lookahead::no_lookahead) {
-				if (warnUnit) {
-					warning("Heuristic 'Unit' implies lookahead. Using atom.");
-					warnUnit = false;
-				}
-				p.lookType = Lookahead::atom_lookahead;
-			}
-			else if (p.lookOps != 0) {
-				if (warnInit) {
-					warning("Heuristic 'Unit' implies unrestricted lookahead.");
-					warnInit = false;
-				}
-				p.lookOps = 0;
-			}
+	config.solve.setEnumerator( config.enumerate.createEnumerator() );
+	config.solve.enumerator()->setReport(this);
+	config.solver->strategies().heuristic.reset(config.heuristic.createHeuristic());
+	if (config.enumerate.limits.get()) {
+		if (!inc) {
+			config.solve.enumerator()->setSearchLimit(config.enumerate.limits->first, config.enumerate.limits->second);
+		}
+		else {
+			warning("Option 'search-limit' is ignored in incremental setting!");
 		}
 	}
 }
 
 void ClaspFacade::validateWeak() {
 	if (inc_) {
-		if (config_->enumerate.onlyPre) {
-			warning("'--pre' is ignored in incremental setting."); 
-			config_->enumerate.onlyPre = false;
+		if (config_->onlyPre) {
+			warning("Option 'onlyPre' is ignored in incremental setting!"); 
+			config_->onlyPre = false;
 		}
 	}
-	if (config_->eq.noSCC && config_->eq.iters != 0) {
-		warning("Selected reasoning mode implies '--eq=0'.");
-		config_->eq.noEq();
+	if (config_->api.supported && config_->api.eq != 0) {
+		warning("Supported models requires --eq=0. Disabling eq-preprocessor!");
+		config_->api.eq = 0;
 	}
-	if (config_->numSolvers() > 1 && enum_.get() && !enum_->supportsParallel()) {
-		warning("Selected reasoning mode implies #Threads=1.");
-		config_->setMaxSolvers(1);
+	if (config_->heuristic.heuristic == "unit") {
+		if (config_->heuristic.lookahead == Lookahead::no_lookahead) {
+			warning("Unit-heuristic implies lookahead. Forcing atom-lookahead!");
+			config_->heuristic.lookahead = Lookahead::atom_lookahead;
+		}
+		else if (config_->heuristic.lookaheadNum != -1) {
+			warning("Unit-heuristic implies lookahead. Ignoring 'initial-lookahead'!");
+			config_->heuristic.lookaheadNum = -1;
+		}
 	}
-	if (config_->numSolvers() > config_->solve.recommendedSolvers()) {
-		char buf[128];
-		sprintf(buf, "Oversubscription: #Threads=%u exceeds logical CPUs (%u).", config_->numSolvers(), config_->solve.recommendedSolvers());
-		warning(buf);
-		warning("Oversubscription leads to excessive context switching.");
+	else if (config_->heuristic.lookaheadNum != -1 && config_->heuristic.lookahead == Lookahead::no_lookahead) {
+		config_->heuristic.lookahead = Lookahead::atom_lookahead;
 	}
-	if (config_->opt.all || config_->opt.no) {
-		config_->opt.hierarch = 0;
-	}
-	if (config_->enumerate.numModels == -1 && config_->consequences()) {
-		config_->enumerate.numModels = 0;
-	}
-	validateWeak(*config_);
 }
 
-// Solving...
-void ClaspFacade::solve(Input& problem, ClaspConfig& config, IncrementalControl* inc, Callback* c) {
-	init(problem, config, inc, c);
-	const bool onlyPre = config.enumerate.onlyPre;
-	AutoState outer(this, state_start);
+// Non-incremental solving...
+void ClaspFacade::solve(Input& problem, ClaspConfig& config, Callback* c) {
+	init(problem, config, 0, c);
+	if (!read() || !preprocess()) {
+		result_ = result_unsat;
+		more_   = false;
+		reportSolution(*config.solver, *config.solve.enumerator(), true);
+	}
+	else if (!config.onlyPre) {
+		//api_->writeProgram(std::cout);
+		config_->solve.reduce.setProblemSize(computeProblemSize());
+		setState(state_solve, event_state_enter);
+		more_ = Clasp::solve(*config.solver, config.solve); 
+	}	
+}
+
+// Incremental solving...
+void ClaspFacade::solveIncremental(Input& problem, ClaspConfig& config, IncrementalControl& inc, Callback* c) {
+	init(problem, config, &inc, c);
 	LitVec assume;
 	do {
-		if (inc) { inc->initStep(*this); }
+		inc.initStep(*this);
 		result_   = result_unknown;
 		more_     = true;
-		if (config.ctx.master()->hasConflict() || !read() || !preprocess()) {
+		if (!read() || !preprocess()) {
 			result_ = result_unsat;
 			more_   = false;
-			reportSolution(*config.ctx.enumerator(), true);
-			break;
+			continue;
+			/*reportSolution(*config.solver, *config.solve.enumerator(), true);
+			break;*/
 		}
-		else if (!onlyPre) {
+		else {
+			config_->solve.reduce.setProblemSize(computeProblemSize());
+			setState(state_solve, event_state_enter);
 			assume.clear();
-			problem.getAssumptions(assume);
-			more_    = solve(assume);
+			if (api_.get()) {
+				api_->getAssumptions(assume);
+                /*
+				std::cout << "Step: " << step_ << std::endl;
+				api_->writeProgram(std::cout);
+                */
+			}
+			more_    = Clasp::solve(*config.solver, assume, config.solve); 
 			if (result_ == result_unknown && !more_) {
 				// initial assumptions are unsat
 				result_ = result_unsat;
+				setState(state_solve, event_state_exit);
 			}
 		}
-	} while (inc && inc->nextStep(*this) && ++step_);
+	} while (inc.nextStep(*this) && ++step_);
 }
 
 // Creates a ProgramBuilder-object if necessary and reads
 // the input by calling input_->read().
 // Returns false, if the problem is trivially UNSAT.
 bool ClaspFacade::read() {
-	AutoState state(this, state_read);
-	Input::ApiPtr ptr(&config_->ctx);
+	setState(state_read, event_state_enter);
 	if (input_->format() == Input::SMODELS) {
 		if (step_ == 0) {
-			api_   = new ProgramBuilder();
-			api_->startProgram(config_->ctx, config_->eq);
+			config_->solver->strategies().symTab.reset(new AtomIndex());
+			api_ = config_->api.createApi(*config_->solver->strategies().symTab);
 		}
 		if (inc_) {
 			api_->updateProgram();
 		}
-		ptr.api= api_.get();
 	}
-	if (config_->opt.hierarch > 0 && !config_->opt.no) {
-		config_->ctx.requestTagLiteral();
+	if (input_->format() == Input::DIMACS && config_->enumerate.numModels == -1) {
+		config_->enumerate.numModels = 1;
 	}
-	uint32 properties = !config_->enumerate.maxSat || input_->format() != Input::DIMACS ? 0 : Input::AS_MAX_SAT;
-	if (config_->enumerate.numModels != 1) { 
-		properties |= config_->enumerate.numModels == -1 ? Input::PRESERVE_MODELS_ON_MIN : Input::PRESERVE_MODELS;
+	if (!input_->read(*config_->solver, api_.get(), config_->enumerate.numModels)) {
+		return false;
 	}
-	return input_->read(ptr, properties);
+	setState(state_read, event_state_exit);
+	return true;
 }
 
 // Prepare the solving state:
 //  - if necessary, transforms the input to nogoods by calling ProgramBuilder::endProgram()
 //  - fires event_p_prepared after input was transformed to nogoods
 //  - adds any minimize statements to the solver and initializes the enumerator
-//  - calls Solver::endInit().
+//  - calls Solver::endAddConstraints().
 // Returns false, if the problem is trivially UNSAT.
 bool ClaspFacade::preprocess() {
-	AutoState state(this, state_preprocess);
-	SharedContext& ctx = config_->ctx;
-	SharedMinimizeData* m = 0;
-	Input::ApiPtr ptr(&ctx);
+	setState(state_preprocess, event_state_enter);
+	MinimizeConstraint* m = 0;
 	if (api_.get()) {
-		if (!api_->endProgram()) {
-			fireEvent(*ctx.master(), event_p_prepared);
+		if (!api_->endProgram(*config_->solver, false, config_->api.backprop)) {
 			return false;
 		}
-		setGraph();
-		ptr.api = api_.get();
 	}
-	if (!config_->opt.no && step_ == 0) {
-		MinimizeBuilder builder;
-		input_->addMinimize(builder, ptr);
-		if (builder.hasRules()) {
-			if (!config_->opt.vals.empty()) {
-				const SumVec& opt = config_->opt.vals;
-				for (uint32 i = 0; i != opt.size(); ++i) {
-					builder.setOptimum(i, opt[i]);
-				}
-			}
-			m = builder.build(ctx, config_->ctx.tagLiteral());
-			if (!m) { return false; }
-		}
-		if (!builder.hasRules() || (builder.numRules() == 1 && config_->opt.hierarch < 2)) {
-			config_->ctx.removeTagLiteral();
-		}
+	if (!config_->enumerate.opt.no && step_ == 0) {
+		m = input_->getMinimize(*config_->solver, api_.get(), config_->enumerate.opt.heu);
 	}
-	fireEvent(*ctx.master(), event_p_prepared);
+	fireEvent(event_p_prepared);
 	if (!inc_ && api_.is_owner()) {
 		api_ = 0;
 	}
-	return config_->enumerate.onlyPre || (initEnumeration(m) && initContextObject(ctx));
+	if (!initEnumerator(m) || !config_->solver->endAddConstraints()) {
+		return false;
+	}
+	setState(state_preprocess, event_state_exit);
+	return true;
 }
 
-// Finalizes initialization of model enumeration.
-// Configures and adds an eventual minimize constraint,
-// sts the number of models to compute and adds warnings
-// if this number conflicts with the preferred number of the enumerator.
-bool ClaspFacade::initEnumeration(SharedMinimizeData* min)  {
-	GlobalOptions::EnumOptions& opts = config_->enumerate;
-	MinimizeMode minMode             = !min || config_->opt.all ? MinimizeMode_t::enumerate : MinimizeMode_t::optimize;
+// Configures the given minimize constraint and adds it to the enumerator.
+// Optimize values that are given in config are added to min.
+bool ClaspFacade::configureMinimize(MinimizeConstraint* min) const {
+	min->setMode( config_->enumerate.opt.all ? MinimizeConstraint::compare_less_equal : MinimizeConstraint::compare_less );
+	if (!config_->enumerate.opt.vals.empty()) {
+		WeightVec& vals = config_->enumerate.opt.vals;
+		uint32 m = std::min((uint32)vals.size(), min->numRules());
+		for (uint32 x = 0; x != m; ++x) {
+			if (!min->setOptimum(x, vals[x])) return false;
+		}
+	}
+	min->simplify(*config_->solver, false);
+	config_->solve.enumerator()->setMinimize(min);
+	if (config_->enumerate.consequences()) {
+		warning("Minimize statements: Consequences may depend on enumeration order!");
+	}
+	return true;
+}
+
+// Finalizes the initialization of the enumerator.
+// Sets the number of models to compute and adds warnings
+// if this number violates the preferred number of the enumerator.
+bool ClaspFacade::initEnumerator(MinimizeConstraint* min) const {
+	Enumerator* e = config_->solve.enumerator();
 	if (step_ == 0) {
-		GlobalOptions::EnumMode autoMode = GlobalOptions::enum_bt;
-		if (opts.restartOnModel) {
-			autoMode = GlobalOptions::enum_record;
+		if (min && !configureMinimize(min)) {
+			return false;
 		}
-		if (minMode == MinimizeMode_t::optimize && !opts.project) {
-			autoMode = GlobalOptions::enum_record;
+		uint32 defM = !e->minimize() && !config_->enumerate.consequences();
+		if (config_->enumerate.numModels == -1) { 
+			config_->enumerate.numModels = defM; 
 		}
-		if (opts.project && config_->numSolvers() > 1) {
-			autoMode = GlobalOptions::enum_record;
+		else if (config_->enumerate.numModels > 0 && defM == 0) {
+			if (config_->enumerate.consequences()) {
+				warning("Option '--number' not 0: last model may not cover consequences!");
+			}
+			if (e->minimize()) {
+				warning("Option '--number' not 0: Optimality of last model not guaranteed!");
+			}
 		}
-		uint32 autoModels = !min && !config_->consequences();
-		if (autoModels == 0 && opts.numModels > 0) {
-			if (config_->consequences())            { warning("'--number' not 0: last model may not cover consequences.");   }
-			if (minMode == MinimizeMode_t::optimize){ warning("'--number' not 0: optimality of last model not guaranteed."); }
-		}
-		if (opts.numModels == -1)      { opts.numModels = autoModels; }	
-		if (config_->consequences() && minMode == MinimizeMode_t::optimize) {
-			warning("Optimization: Consequences may depend on enumeration order.");
-		}
-		if (opts.project && minMode == MinimizeMode_t::optimize) {
-			for (const WeightLiteral* it = min->lits; !isSentinel(it->first); ++it) {
-				if ( !config_->ctx.project(it->first.var()) ) {
-					warning("Projection: Optimization values may depend on enumeration order.");
+	}
+	e->init(*config_->solver, config_->enumerate.numModels);
+	if (config_->enumerate.project && min) {
+		const Solver& s = *config_->solver;
+		for (uint32 i = 0; i != min->numRules();) {
+			const MinimizeConstraint::Rule& r = min->minRule(i++);
+			for (MinimizeConstraint::Rule::const_iterator it = r.begin(); it != r.end(); ++it) {
+				if (s.value(it->first.var()) == value_free && !s.project(it->first.var())) {
+					warning("Projection: Optimization values may depend on enumeration order!");
+					i = min->numRules();
 					break;
 				}
 			}
 		}
-		if (config_->enumerate.mode == GlobalOptions::enum_auto) {
-			config_->enumerate.mode = autoMode;
-			enum_ = config_->createEnumerator(this);
-		}
 	}
-	if (min) {
-		min->setMode(minMode, config_->opt.hierarch);
-		enum_->setMinimize(min);
-	}
-	enum_->enumerate(opts.numModels);
-	config_->ctx.addEnumerator(enum_.release());
 	return true;
 }
 
-// Finalizes initialization of SharedContext and
-// computes a value that represents the problem size.
+// Computes a value that represents the problem size.
 // The value is then used by the reduce-heuristic
 // to determine the initial learnt db size.
-bool ClaspFacade::initContextObject(SharedContext& ctx) const {
-	if (!ctx.endInit()) { return false; }
-	uint32 estimate = 0;
-	uint32 size     = 0;
-	for (uint32 i = 0; i != config_->numSolvers(); ++i) {
-		SolverConfig* x = config_->getSolver(i);
-		if (x->params.reduce.estimate() && estimate == 0) {
-			estimate = ctx.problemComplexity();
-			break;
-		}
+uint32 ClaspFacade::computeProblemSize() const {
+	const Solver& s = *config_->solver;
+	uint32 ps;
+	if (config_->solve.reduce.estimate) {
+		ps = config_->solver->problemComplexity();
 	}
-	size = ctx.numConstraints();
-	if (input_->format() != Input::DIMACS) {
-		double r = ctx.numVars() / std::max(1.0, double(ctx.numConstraints()));
+	else if (input_->format() != Input::DIMACS) {
+		double r = s.numVars() / std::max(1.0, double(s.numConstraints()));
 		if (r < 0.1 || r > 10.0) {
-			size = std::max(ctx.numVars(), ctx.numConstraints());
+			ps = std::max(s.numVars(), s.numConstraints());
 		}
 		else {
-			size = std::min(ctx.numVars(), ctx.numConstraints());
+			ps = std::min(s.numVars(), s.numConstraints());
 		}
 	}
-	ctx.setProblemSize(size, estimate);
-	return true;
-}
-
-void ClaspFacade::setGraph() {
-	if (!graph_.get() && api_->dependencyGraph() && api_->dependencyGraph()->nodes() > 0) {
-		graph_ = api_->dependencyGraph(true);
-		for (uint32 i = 0; i != config_->numSolvers(); ++i) {
-			DefaultUnfoundedCheck* ufs = new DefaultUnfoundedCheck();
-			ufs->attachTo(*config_->getSolver(i)->solver, graph_.get());
-		}
+	else {
+		ps = s.numConstraints();
 	}
-}
-
-bool ClaspFacade::solve(const LitVec& assume) {
-	struct OnExit : AutoState { 
-		OnExit(ClaspFacade* f) : AutoState(f, state_solve) {}
-		~OnExit() { SolveAlgorithm* x = self_->ctrl_; self_->ctrl_ = 0; delete x; }
-	};
-	OnExit resetCtrl(this);
-	config_->solve.createSolveObject(ctrl_, config_->ctx, config_->solvers());
-	bool more = ctrl_->solve(config_->ctx, config_->master()->params, assume);
-	if (ctrl_->hasErrors()) {
-		for (uint32 i = 0; i != config_->numSolvers(); ++i) {
-			if (config_->getSolver(i)->solver->id() == Solver::invalidId) {
-				char buf[128];
-				sprintf(buf, "Thread %u failed and was removed.", i);
-				warning(buf);
-			}
-		}
-		config_->removeSolvers(Solver::invalidId);
-	}
-	return more;
+	return ps;
 }
 }

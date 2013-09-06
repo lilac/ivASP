@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2012, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -33,37 +33,21 @@
  */
 namespace Clasp {
 class ProgramBuilder;
-class SharedContext;
-class MinimizeBuilder;
-struct PureLitMode_t {
-	enum Mode { 
-		assert_pure_no  = 0, /**< an unremovable constraint (e.g. a problem constraint)        */
-		assert_pure_yes = 1, /**< a (removable) constraint derived from conflict analysis      */
-		assert_pure_auto= 2  /**< a (removable) constraint derived from unfounded set checking */
-	};
-};  
-typedef PureLitMode_t::Mode PureLitMode;
+class Solver;
+class MinimizeConstraint;
 struct ObjectiveFunction {
 	WeightLitVec lits;
-	wsum_t       adjust;
-	wsum_t       rhs;
+	int32        adjust;  
 };
 
 class Input {
 public:
-	enum Format     { SMODELS, DIMACS, OPB};
-	enum Property   { PRESERVE_MODELS = 1, PRESERVE_MODELS_ON_MIN = 2, AS_MAX_SAT = 4};
-	union ApiPtr { 
-		explicit ApiPtr(ProgramBuilder* a) : api(a) {}
-		explicit ApiPtr(SharedContext* c)  : ctx(c) {}
-		ProgramBuilder* api;
-		SharedContext*  ctx;
-	};
+	enum Format {SMODELS, DIMACS, OPB};
 	Input() {}
 	virtual ~Input() {}
 	virtual Format format() const = 0;
-	virtual bool   read(ApiPtr api, uint32 properties) = 0;
-	virtual void   addMinimize(MinimizeBuilder& m, ApiPtr api) = 0;
+	virtual bool   read(Solver& s, ProgramBuilder* api, int numModels) = 0;
+	virtual MinimizeConstraint* getMinimize(Solver& s, ProgramBuilder* api, bool heu) = 0;
 	virtual void   getAssumptions(LitVec& a) = 0;
 private:
 	Input(const Input&);
@@ -74,8 +58,8 @@ class StreamInput : public Input {
 public:
 	explicit StreamInput(std::istream& in, Format f);
 	Format format() const { return format_; }
-	bool   read(ApiPtr api, uint32 properties);
-	void   addMinimize(MinimizeBuilder& m, ApiPtr api);
+	bool   read(Solver& s, ProgramBuilder* api, int numModels);
+	MinimizeConstraint* getMinimize(Solver& s, ProgramBuilder* api, bool heu);
 	void   getAssumptions(LitVec&) {}
 private:
 	ObjectiveFunction func_;
@@ -84,44 +68,38 @@ private:
 };
 
 
-//! Auto-detect input format of problem.
+//! Auto-detect input format of problem
 Input::Format detectFormat(std::istream& prg);
 
-//! Reads a logic program in SMODELS-input format.
+//! Reads a logic program in SMODELS-input format
 /*!
  * \ingroup problem
- * \param prg The stream containing the logic program.
+ * \param prg The stream containing the logic program
  * \param api The ProgramBuilder object to use for program creation.
- * \pre The api is ready, i.e. startProgram() was called.
+ * \pre The api is ready, i.e. startProgram() was called
  */
 bool parseLparse(std::istream& prg, ProgramBuilder& api);
 
-//! Reads a CNF/WCNF in simplified DIMACS-format.
+//! Reads a CNF in simplified DIMACS-format
 /*!
  * \ingroup problem
- * \param prg The stream containing the CNF.
- * \param ctx The context object in which to store the problem.
- * \param pm  How to handle pure literals.
- * \param o An out parameter storing optional objective function. 
- * \param maxSat Treat problem as maxsat.
+ * \param prg The stream containing the CNF
+ * \param s The Solver to use for solving the problem 
+ * \param assertPure If true, pure literals are asserted
  */
-bool parseDimacs(std::istream& prg, SharedContext& ctx, PureLitMode pm, ObjectiveFunction& o, bool maxSat = false);
-inline bool parseDimacs(std::istream& prg, SharedContext& ctx, PureLitMode pm = PureLitMode_t::assert_pure_no) {
-	ObjectiveFunction o;
-	return parseDimacs(prg, ctx, pm, o, false);
-}
+bool parseDimacs(std::istream& prg, Solver& s, bool assertPure);
 
-//! Reads a Pseudo-Boolean problem in OPB-format.
+//! Reads a Pseudo-Boolean problem in linear OPB-format
 /*!
  * \ingroup problem
- * \param prg The stream containing the PB-problem.
- * \param ctx The context object in which to store the problem.
+ * \param prg The stream containing the PB-problem
+ * \param s The Solver to use for solving the problem 
  * \param objective An out parameter that contains an optional objective function. 
  */
-bool parseOPB(std::istream& prg, SharedContext& ctx, ObjectiveFunction& objective);
+bool parseOPB(std::istream& prg, Solver& s, ObjectiveFunction& objective);
 
 
-//! Instances of this class are thrown if a problem occurs during reading the input.
+//! Instances of this class are thrown if a problem occurs during reading the input
 struct ReadError : public ClaspError {
 	ReadError(unsigned line, const char* msg);
 	static std::string format(unsigned line, const char* msg);
@@ -132,38 +110,22 @@ struct ReadError : public ClaspError {
 class StreamSource {
 public:
 	explicit StreamSource(std::istream& is);
-	//! Returns the character at the current reading-position.
-	char operator*() {
-		if (buffer_[pos_] == 0) { underflow(); }
-		return buffer_[pos_];
-	}
-	//! Advances the current reading-position.
-	StreamSource& operator++() { ++pos_; **this; return *this; }
+	//! returns the character at the current reading-position
+	char operator*();
+	//! advances the current reading-position
+	StreamSource& operator++();
+	//! returns the line number of the current reading-position
+	unsigned line() const { return line_; }
 	
-	//! Reads a base-10 integer.
+	//! reads a base-10 integer
 	/*!
 	 * \pre system uses ASCII
 	 */
 	bool parseInt(int& val);
-	bool parseInt64(int64& val);
-	bool parseInt(int& val, int min, int max);
-	//! Consumes next character if equal to c.
-	bool match(char c) { return (**this == c) && (++*this, true); }
-	//! Consumes next character(s) if equal to EOL.
-	/*!
-	 * Consumes the next character if it is either '\n' or '\r'
-	 * and increments the internal line counter.
-	 * 
-	 * \note If next char is '\r', the function will also consume
-	 * a following '\n' (i.e. matchEol also matches CR/LF).
-	 */
-	bool matchEol();
-	//! Skips horizontal white-space.
-	bool skipSpace() { while (match(' ') || match('\t')) { ; } return true; }
-	//! Skips horizontal and vertical white-space.
-	bool skipWhite() { do { skipSpace(); } while (matchEol()); return true; }
-	//! Returns the number of matched EOLs + 1.
-	unsigned line() const { return line_; }
+	//! skips horizontal white-space
+	void skipWhite();
+	//! works like std::getline
+	bool readLine( char* buf, unsigned maxSize );
 private:
 	StreamSource(const std::istream&);
 	StreamSource& operator=(const StreamSource&);
@@ -174,48 +136,54 @@ private:
 	unsigned line_;
 };
 
-//! Skips the current line.
-inline void skipLine(StreamSource& in) {
-	while (*in && !in.matchEol()) { ++in; }
+//! skips horizontal and vertical white-space
+inline bool skipAllWhite(StreamSource& in) {
+	do { in.skipWhite(); } while (*in == '\n' && *++in != 0);
+	return true;
 }
 
-//! Consumes next character if equal to c.
+//! skips the current line
+inline void skipLine(StreamSource& in) {
+	while (*in && *in != '\n') ++in;
+	if (*in) ++in;
+}
+
+//! consumes next character if equal to c
 /*!
  * \param in StreamSource from which characters should be read
  * \param c character to match
- * \param sw skip leading spaces
+ * \param sw skip leading white-space
  * \return
  *  - true if character c was consumed
  *  - false otherwise
  *  .
  */
 inline bool match(StreamSource& in, char c, bool sw) {
-	return (!sw || in.skipSpace()) && in.match(c);
+	if (sw) in.skipWhite();
+	if (*in == c) {
+		++in;
+		return true;
+	}
+	return false;
 }
 
-//! Consumes string str.
+//! consumes string str 
 /*!
  * \param in StreamSource from which characters should be read
  * \param str string to match
- * \param sw skip leading spaces
- * \pre   str != 0
+ * \param sw skip leading white-space
  * \return
  *  - true if string str was consumed
  *  - false otherwise
  *  .
  */
 inline bool match(StreamSource& in, const char* str, bool sw) {
-	if (sw) in.skipSpace();
-	while (*str && in.match(*str)) { ++str; }
+	if (sw) in.skipWhite();
+	for (; *str && *in && *str == *in; ++str, ++in) {;}
 	return *str == 0;
 }
 
-inline bool matchEol(StreamSource& in, bool sw) {
-	if (sw) in.skipSpace();
-	return in.matchEol();
-}
-
-//! Extracts characters from in and stores them into buf until a newline character or eof is found.
+//! extracts characters from in and stores them into buf until a newline character or eof is found
 /*!
  * \note    The newline character is extracted and discarded, i.e. it is not stored and the next input operation will begin after it.
  * \return  True if a newline was found, false on eof

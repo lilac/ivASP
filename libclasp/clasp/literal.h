@@ -22,12 +22,12 @@
 
 #ifdef _MSC_VER
 #pragma once
-#pragma warning (disable : 4996)
 #endif
 #include <clasp/util/platform.h>
 #include <clasp/pod_vector.h>
 #include <algorithm>  // std::swap
 #include <limits>
+#include <string>
 /*!
  * \file 
  * Contains the definition of the class Literal.
@@ -38,7 +38,7 @@ namespace Clasp {
  */
 //@{
 
-//! A variable is currently nothing more but an integer in the range [0..varMax).
+//! A variable is currently nothing more but an integer in the range [0..varMax)
 typedef uint32 Var;
 
 //! varMax is not a valid variale, i.e. currently Clasp supports at most 2^30 variables.
@@ -47,25 +47,13 @@ const Var varMax = (Var(1) << 30);
 //! The variable 0 has a special meaning in the solver.
 const Var sentVar = 0;
 
-//! Ids are integers in the range [0..idMax).
-const uint32 idMax = UINT32_MAX;
-
-//! Possible types of a variable.
-struct Var_t {
-	enum Type { atom_var = 1, body_var = 2, atom_body_var = atom_var | body_var};
-	static bool isBody(Type t) {
-		return (static_cast<uint32>(t) & static_cast<uint32>(body_var)) != 0;
-	}
-	static bool isAtom(Type t) { 
-		return (static_cast<uint32>(t) & static_cast<uint32>(atom_var)) != 0; 
-	}
-};
-typedef Var_t::Type VarType;
-
-//! A signed integer type used to represent weights.
+//! A signed integer type used to represent weights
 typedef int32 weight_t;
-//! A signed integer type used to represent sums of weights.
-typedef int64 wsum_t;
+
+typedef uint8 ValueRep;           /**< Type of the three value-literals */
+const ValueRep value_true   = 1;  /**< Value used for variables that are true */
+const ValueRep value_false  = 2;  /**< Value used for variables that are false */
+const ValueRep value_free   = 0;  /**< Value used for variables that are unassigned */
 
 //! A literal is a variable or its negation.
 /*!
@@ -82,9 +70,9 @@ public:
 	//! The default constructor creates the positive literal of the special sentinel var.
 	Literal() : rep_(0) { }
 	
-	//! Creates a literal of the variable var with sign s.
+	//! creates a literal of the variable var with sign s
 	/*!
-	 * \param var The literal's variable.
+	 * \param var The literal's variable
 	 * \param s true if new literal should be negative.
 	 * \pre var < varMax
 	 */
@@ -92,13 +80,13 @@ public:
 		assert( var < varMax );
 	}
 
-	//! Returns the unique index of this literal.
+	//! returns the unique index of this literal
 	/*!
 	 * \note The watch-flag is ignored and thus the index of a literal can be stored in 31-bits. 
 	 */
 	uint32 index() const { return rep_ >> 1; }
 	
-	//! Creates a literal from an index.
+	//! creates a literal from an index.
 	/*!
 	 * \pre idx < 2^31
 	 */
@@ -107,16 +95,16 @@ public:
 		return Literal(idx<<1);
 	}
 
-	//! Creates a literal from an unsigned integer.
+	//! creates a literal from an unsigned integer.
 	static Literal fromRep(uint32 rep) { return Literal(rep); }
 	
 	uint32& asUint()        { return rep_; }
 	uint32  asUint() const  { return rep_; }
 
-	//! Returns the variable of the literal.
+	//! returns the variable of the literal.
 	Var var() const { return rep_ >> 2; }
 	
-	//! Returns the sign of the literal.
+	//! returns the sign of the literal.
 	/*!
 	 * \return true if the literal is negative. Otherwise false.
 	 */
@@ -124,16 +112,16 @@ public:
 
 	void swap(Literal& other) { std::swap(rep_, other.rep_); }
 	
-	//! Sets the watched-flag of this literal.
+	//! sets the watched-flag of this literal
 	void watch() { store_set_bit(rep_, 0); }
 	
-	//! Clears the watched-flag of this literal.
+	//! clears the watched-flag of this literal
 	void clearWatch() { store_clear_bit(rep_, 0); }
 	
-	//! Returns true if the watched-flag of this literal is set.
+	//! returns true if the watched-flag of this literal is set
 	bool watched() const { return test_bit(rep_, 0); }
 
-	//! Returns the complimentary literal of this literal.
+	//! returns the complimentary literal of this literal.
 	/*!
 	 *  The complementary Literal of a Literal is a Literal referring to the
 	 *  same variable but with inverted sign.
@@ -161,25 +149,25 @@ private:
 // Common interface
 /////////////////////////////////////////////////////////////////////////////////////////
 
-//! Creates the negative literal of variable v.
+//! creates the negative literal of variable v.
 inline Literal negLit(Var v) { return Literal(v, true);}
-//! Creates the positive literal of variable v.
+//! creates the positive literal of variable v.
 inline Literal posLit(Var v) { return Literal(v, false);}
-//! Returns the index of variable v.
+//! returns the index of variable v.
 /*!
  * \note same as posLit(v).index()
  */
 inline uint32 index(Var v) { return v << 1; }
 
-//! Returns true if p represents the special variable 0
+//! returns true if p represents the special variable 0
 inline bool isSentinel(Literal p) { return p.var() == sentVar; }
 
-//! Defines a strict-weak-ordering for Literals.
+//! defines a strict-weak-ordering for Literals.
 inline bool operator<(const Literal& lhs, const Literal& rhs) {
 	return lhs.index() < rhs.index();
 }
 
-//! Returns !(lhs == rhs).
+//! returns !(lhs == rhs)
 inline bool operator!=(const Literal& lhs, const Literal& rhs) {
 	return ! (lhs == rhs);
 }
@@ -187,206 +175,130 @@ inline bool operator!=(const Literal& lhs, const Literal& rhs) {
 inline void swap(Literal& l, Literal& r) {
 	l.swap(r);
 }
+typedef PodVector<Var>::type VarVec;          /**< a vector of variables  */
+typedef PodVector<Literal>::type LitVec;      /**< a vector of literals   */
+typedef PodVector<weight_t>::type WeightVec;  /**< a vector of weights    */
 
-typedef PodVector<Var>::type VarVec;          /**< A vector of variables.  */
-typedef PodVector<Literal>::type LitVec;      /**< A vector of literals.   */
-typedef PodVector<weight_t>::type WeightVec;  /**< A vector of weights.    */
-typedef PodVector<wsum_t>::type SumVec;       /**< A vector of sums of weights. */
+typedef std::pair<Literal, weight_t> WeightLiteral;  /**< a weight-literal */
+typedef PodVector<WeightLiteral>::type WeightLitVec; /**< a vector of weight-literals */
 
-typedef std::pair<Literal, weight_t> WeightLiteral;  /**< A weight-literal. */
-typedef PodVector<WeightLiteral>::type WeightLitVec; /**< A vector of weight-literals. */
-
-///////////////////////////////////////////////////////////////////////////////
-// Truth values
-///////////////////////////////////////////////////////////////////////////////
-typedef uint8 ValueRep;           /**< Type of the three value-literals. */
-const ValueRep value_true   = 1;  /**< Value used for variables that are true. */
-const ValueRep value_false  = 2;  /**< Value used for variables that are false. */
-const ValueRep value_free   = 0;  /**< Value used for variables that are unassigned. */
-
-//! Returns the value that makes the literal lit true.
-/*!
- * \param lit The literal for which the true-value should be determined.
- * \return
- *   - value_true     iff lit is a positive literal
- *   - value_false    iff lit is a negative literal.
- *   .
- */
-inline ValueRep trueValue(const Literal& lit) { return 1 + lit.sign(); }
-
-//! Returns the value that makes the literal lit false.
-/*!
- * \param lit The literal for which the false-value should be determined.
- * \return
- *   - value_false      iff lit is a positive literal
- *   - value_true       iff lit is a negative literal.
- *   .
- */
-inline ValueRep falseValue(const Literal& lit) { return 1 + !lit.sign(); }
-
-//! Returns the sign that matches the value.
-/*!
- * \return
- *   - false iff v == value_true
- *   - true  otherwise
- */
-inline bool valSign(ValueRep v) { return v != value_true; }
 //@}
 
-//! Symbol table that maps external ids to internal literals.
+//! An atom of a program.
+struct Atom {
+	//! The default constructor creates an invalid literal
+	Atom(const char* n = 0) : name(n?n:"") , lit(negLit(sentVar)) { }
+	std::string name;     /**< Name of the atom - typically generated by lparse */
+	mutable Literal lit;  /**< Corresponding literal in the solver */
+};
+
+//! Symbol table that maps atom ids to Atoms
 /*!
  * A symbol table can be populated incrementally, but
  * each incremental step must be started with a call to
  * startInit() and stopped with a call to endInit().
- * Symbols can only be added between calls to startInit()
+ * Atoms can only be added between calls to startInit()
  * and endInit() and lookup-operations are only valid
  * after a call to endInit().
  * 
  * The following invariants must hold but are not fully checked:
- * 1. Symbol ids are added at most once
+ * 1. Atom ids are added at most once
  * 2. All Ids added in step I+1 are greater than those added in step I
  */
-class SymbolTable {
-private:
-	struct String {
-		String(const char* n) : str(n) {}
-		bool        empty() const { return str == 0 || !*str; }
-		const char* c_str() const { return str; }
-		char        operator[](uint32 i) const { return str[i]; }
-	private: const char* str;
-	};
+class AtomIndex {
 public:
-	typedef uint32                           key_type;
-	typedef String                           data_type;
-	struct                                   symbol_type {
-		symbol_type(Literal x = negLit(0), data_type d = 0)
-			: lit(x), name(d) {}
-		mutable  Literal lit;
-		data_type        name;
-	};
-	typedef std::pair<key_type, symbol_type> value_type;
-	typedef PodVector<value_type>::type      map_type;
-	typedef map_type::const_iterator         const_iterator;
-	enum MapType { map_direct, map_indirect };
+	typedef uint32                      key_type;
+	typedef std::pair<key_type, Atom>   value_type;
+	typedef PodVector<value_type>::type vec_type;
+	typedef vec_type::const_iterator    const_iterator;
+	typedef vec_type::iterator          iterator;
+	//! creates an empty index
+	AtomIndex() : lastSort_(0), lastStart_(0) {}
+	~AtomIndex() {
+		PodVector<value_type>::destruct(atoms_);
+	}
+	//! returns the number of atoms in this index
+	uint32 size() const { return (uint32)atoms_.size(); }
+	//! removes all atoms from this index
+	void   clear()      { atoms_.clear(); lastSort_ = 0; }
+	//! returns an iterator pointing to the beginning of this index
+	const_iterator begin() const { return atoms_.begin(); }
+	//! returns an iterator pointing to the first atom of the current incremental step
+	const_iterator curBegin() const { return atoms_.begin() + lastStart_; }
+	//! returns an iterator pointing behind the end of this index 
+	const_iterator end()   const { return atoms_.end();   }
 
-	//! Creates an empty symbol table.
-	SymbolTable() : lastSort_(map_type::size_type(-1)), lastStart_(0), end_(varMax), type_(map_indirect) { }
-	~SymbolTable() { clear();  }
-	void   copyTo(SymbolTable& o) {
-		o.clear();
-		o.map_.reserve(map_.size());
-		for (const_iterator it = map_.begin(), end = map_.end(); it != end; ++it) {
-			o.map_.push_back(value_type(it->first, symbol_type(it->second.lit, dupName(it->second.name.c_str()))));
-		}
-		o.lastSort_ = lastSort_;
-		o.lastStart_= lastStart_;
-	}
-	//! Type of symbol mapping.
-	/*!
-	 * In a direct mapping, symbol ids directly correspond to solver variables.
-	 * In an indirect mapping, symbol ids are independent of solver variables and
-	 * are instead mapped to solver literals.
-	 */
-	MapType type()    const { return type_; }
-	//! Returns the number of symbols in this table.
-	uint32  size()    const { return type() == map_indirect ? (uint32)map_.size() : end_; }
-	//! Returns an iterator pointing to the beginning of this index.
-	const_iterator begin()    const { return map_.begin(); }
-	//! Returns an iterator pointing to the first atom of the current incremental step.
-	const_iterator curBegin() const { return map_.begin() + lastStart_; }
-	//! Returns an iterator pointing behind the end of this index.
-	const_iterator end()      const { return map_.end();   }
-	//! Removes all symbols from this table.
-	void   clear()      { 
-		for (const_iterator it = map_.begin(), end = map_.end(); it != end; ++it) {
-			freeName(it->second.name.c_str());
-		}
-		map_.clear(); 
-		lastSort_ = map_type::size_type(-1); 
-		lastStart_= 0; 
-	}
-	//! Prepares the symbol table so that new symbols can be added.
+	//! prepares the symbol table so that new atoms can be added
 	void startInit() {
-		lastStart_ = map_.size();
+		lastStart_ = atoms_.size();
 		lastSort_  = lastStart_;
 	}
-	//! Adds the symbol with the given id to the symbol table.
+
+	//! adds the atom with the given id to the symbol table
 	/*!
 	 * \pre startInit() was called
-	 * \pre the symbol table does not yet contain a symbol with the given id
+	 * \pre the symbol table does not yet contain an atom with the given id
 	 */
-	symbol_type& addUnique(key_type id, const char* name) {
-		assert((lastSort_ == 0 || map_[lastSort_-1].first < id) && "Symbol table: Invalid id in incremental step!");
-		map_.push_back(value_type(id, symbol_type(negLit(0), dupName(name))));
-		return map_.back().second;
+	Atom& addUnique(key_type id, const Atom& a) {
+		assert((lastSort_ == 0 || atoms_[lastSort_-1].first < id) && "Symbol table: Invalid id in incremental step!");
+		atoms_.push_back(value_type(id, a));
+		return atoms_.back().second;
 	}
-	//! Freezes the symbol table and prepares it so that lookup operations become valid.
-	/*
-	 * \param type Type of mapping.
-	 * \param end  Only for direct mapping: end of mapped range (i.e. [0, end)).
-	 */
-	void endInit(MapType type = map_indirect, Var end = varMax) {
-		std::sort(map_.begin()+lastSort_, map_.end(), LessKey());
-		lastSort_ = map_.size();
+	
+	//! freezes the symbol table and prepares it so that lookup operations become valid
+	void endInit() {
+		std::sort(atoms_.begin()+lastSort_, atoms_.end(), LessKey());
+		lastSort_ = atoms_.size();
 		assert(unique() && "Symbol table: Duplicate atoms are not allowed\n");
-		end_      = varMax;
-		if ((type_=type) == map_direct) {
-			end_    = end;
-		}
 	}
-	//! Returns the symbol with id i or 0 if no such symbol exists.
+
+	//! returns the atom with id i or 0 if no such atom exists
 	/*!
 	 * \pre endInit() was called
 	 */
-	const symbol_type* find(key_type i) const {
-		assert(lastSort_ == map_.size());
-		const_iterator it = std::lower_bound(map_.begin(), map_.end(), i, LessKey());
-		return it != map_.end() && it->first == i ? &it->second : 0;
+	Atom* find(key_type i) const {
+		assert(lastSort_ == atoms_.size());
+		const_iterator it = std::lower_bound(atoms_.begin(), atoms_.end(), i, LessKey());
+		return it != atoms_.end() && it->first == i
+			? const_cast<Atom*>(&it->second)
+			: 0;
 	}
-	//! Returns the symbol with the given id.
+	
+	//! returns the atom with id i or 0 if no such atom exists
 	/*!
 	 * \pre find(id) != 0
 	 */
-	const symbol_type& operator[](key_type id) const {
-		const symbol_type* a = find(id); assert(a);
+	Atom& operator[](key_type id) const {
+		Atom* a = find(id); assert(a);
 		return *a;
 	}
+
 	/*!
-	 * \pre no symbol was added since last call to sortUnique
+	 * \pre no atom was added since last call to sortUnique
 	 */
 	const_iterator lower_bound(const_iterator start, key_type i) const {
-		return std::lower_bound(start, map_.end(), i, LessKey());
+		return std::lower_bound(start, atoms_.end(), i, LessKey());
 	}
 private:
-	SymbolTable(const SymbolTable&);
-	SymbolTable& operator=(const SymbolTable&);
-	const char* dupName(const char* n) const {
-		if (!n) return 0;
-		std::size_t len = std::strlen(n);
-		char*       dest= new char[len+1];
-		std::strncpy(dest, n, len+1);
-		return dest;
-	}
-	void freeName(const char* n) const { delete [] n; }
 	bool unique() const {
-		map_type::size_type i = lastSort_;
-		for (map_type::size_type j = lastSort_+1; j < map_.size(); ++j) {
-			if (map_[i].first == map_[j].first) {
+		vec_type::size_type i = lastSort_;
+		for (vec_type::size_type j = lastSort_+1; j < atoms_.size(); ++j) {
+			if (atoms_[i].first == atoms_[j].first) {
 				return false;
 			}
 		}
 		return true;
 	}
+	AtomIndex(const AtomIndex&);
+	AtomIndex& operator=(const AtomIndex&);
 	struct LessKey {
 		bool operator()(const value_type& lhs, const value_type& rhs) const { return lhs.first < rhs.first; }
 		bool operator()(const value_type& lhs, key_type i) const { return lhs.first < i; }
 		bool operator()(key_type i, const value_type& rhs) const { return i < rhs.first; }
 	};
-	map_type            map_;
-	map_type::size_type lastSort_;
-	map_type::size_type lastStart_;
-	uint32              end_;
-	MapType             type_;
+	vec_type            atoms_;
+	vec_type::size_type lastSort_;
+	vec_type::size_type lastStart_;
 };
 
 class ClaspError : public std::runtime_error {

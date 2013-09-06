@@ -56,7 +56,6 @@ public:
 		indices_  = other.indices_;
 		heap_     = other.heap_;
 		compare_  = other.compare_;
-		return *this;
 	}
 
 	const compare_type& key_compare() const {

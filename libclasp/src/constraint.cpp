@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2012, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -26,28 +26,26 @@ namespace Clasp {
 /////////////////////////////////////////////////////////////////////////////////////////
 Constraint::Constraint()                  {}
 Constraint::~Constraint()                 {}
-void Constraint::destroy(Solver*, bool)   { delete this; }
-ConstraintType Constraint::type() const   { return Constraint_t::static_constraint; }
 bool Constraint::simplify(Solver&, bool)  { return false; }
+void Constraint::destroy()                { delete this; }
 void Constraint::undoLevel(Solver&)       {}
 uint32 Constraint::estimateComplexity(const Solver&) const { return 1;  }
-ClauseHead* Constraint::clause()          { return 0; } 
 LearntConstraint::~LearntConstraint()     {}
 LearntConstraint::LearntConstraint()      {}
-Activity LearntConstraint::activity() const{ return Activity(0,  (1u<<7)-1); }
+uint32 LearntConstraint::activity() const { return 0; }
 void LearntConstraint::decreaseActivity() {}
-ConstraintType LearntConstraint::type() const { return Constraint_t::learnt_conflict; }
 /////////////////////////////////////////////////////////////////////////////////////////
 // PostPropagator
 /////////////////////////////////////////////////////////////////////////////////////////
 PostPropagator::PostPropagator() : next(0)           {}
 PostPropagator::~PostPropagator()                    {}
 uint32 PostPropagator::priority() const              { return uint32(priority_single); }
-bool PostPropagator::init(Solver&)                   { return true; }
 void PostPropagator::reset()                         {}
 bool PostPropagator::isModel(Solver&)                { return true; }
-void PostPropagator::reason(Solver&, Literal, LitVec&) {}
-Constraint::PropResult PostPropagator::propagate(Solver&, Literal, uint32&) { 
+bool PostPropagator::nextSymModel(Solver&, bool)     { return false; }
+ConstraintType PostPropagator::reason(const Literal&, LitVec&) { return PostPropagator::type(); }
+ConstraintType PostPropagator::type() const                    { return Constraint_t::static_constraint; }
+Constraint::PropResult PostPropagator::propagate(const Literal&, uint32&, Solver&) { 
 	return PropResult(true, false); 
 }
 /////////////////////////////////////////////////////////////////////////////////////////

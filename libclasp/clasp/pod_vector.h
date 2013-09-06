@@ -20,9 +20,8 @@
 
 #ifndef CLASP_POD_VECTOR_H_INCLUDED
 #define CLASP_POD_VECTOR_H_INCLUDED
-#include <clasp/util/pod_vector.h>
 #include <vector>
-
+#include <clasp/util/pod_vector.h>
 namespace Clasp {
 
 #ifdef _DEBUG
@@ -45,21 +44,13 @@ namespace Clasp {
 #endif
 
 template <class T>
-inline void releaseVec(T& t) {
+void releaseVec(T& t) {
 	T().swap(t);
 }
 
 template <class T>
-inline void shrinkVecTo(T& t, typename T::size_type j) {
+void shrinkVecTo(T& t, typename T::size_type j) {
 	t.erase(t.begin()+j, t.end());
-}
-
-template <class T>
-void moveDown(T& t, typename T::size_type from, typename T::size_type to) {
-	for (typename T::size_type end = t.size(); from != end;) {
-		t[to++] = t[from++];
-	}
-	shrinkVecTo(t, to);
 }
 
 }

@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2012, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -35,10 +35,7 @@
  */
 namespace Clasp {
 
-class  SharedContext;
-class  Solver;
-class  ClauseHead;
-struct CCMinRecursive;
+class Solver;
 
 /**
  * \defgroup constraint Boolean Constraints
@@ -48,31 +45,12 @@ struct CCMinRecursive;
 //! Constraint types distinguished by a Solver.
 struct Constraint_t {
 	enum Type { 
-		static_constraint = 0, /**< an unremovable constraint (e.g. a problem constraint)        */
-		learnt_conflict   = 1, /**< a (removable) constraint derived from conflict analysis      */
-		learnt_loop       = 2, /**< a (removable) constraint derived from unfounded set checking */
-		learnt_other      = 3, /**< a (removable) constraint learnt by some other means          */
-		max_value         = learnt_other
-	};
-	struct Set {
-		Set() : m(0) {}
-		bool inSet(Type t) const { return (m & (uint32(1)<<t)) != 0; }
-		void addSet(Type t)      { m |= (uint32(1)<<t); }
-		uint32 m;
+		static_constraint = 0, learnt_conflict = 1, learnt_loop = 2, learnt_other = 3, 
+		max_learnt_type   = learnt_other, short_constraint = 4, num_types = 5
 	};
 };  
 typedef Constraint_t::Type ConstraintType;
-typedef Constraint_t::Set  TypeSet;
-//! Type storing a constraint's activity.
-struct Activity {
-	enum { LBD_SHIFT = 7, MAX_LBD = (1 << LBD_SHIFT)-1, MAX_ACT = (1 << (32-LBD_SHIFT))-1 };
-	Activity(uint32 act, uint32 lbd) : rep( (act << LBD_SHIFT) | lbd ) {}
-	uint32 activity() const { return rep >> LBD_SHIFT; }
-	uint32 lbd()      const { return rep & uint32(MAX_LBD); }
-	void   bumpAct()        { if (rep < uint32(MAX_ACT<<LBD_SHIFT)) rep += (1<<LBD_SHIFT); }
-	void   setLbd(uint32 x) { rep &= ~uint32(MAX_LBD); rep |= x; }
-	uint32 rep;
-};
+
 
 //! Base class for (boolean) constraints to be used in a Solver.
 /*!
@@ -84,90 +62,62 @@ struct Activity {
  */
 class Constraint {
 public:
-	//! Type used as return type for Constraint::propagate.
-	struct PropResult {
-		explicit PropResult(bool a_ok = true, bool a_keepWatch = true) : ok(a_ok), keepWatch(a_keepWatch) {}
-		bool ok;         /**< true if propagation completes without conflict     */
-		bool keepWatch;  /**< true if constraint wants to keep the current watch */
-	};
+	/*!
+	 * Type used as return type for Constraint::propagate.
+	 * \see Constraint::propagate for a description of the meaning of PropResult's members.
+	 */
+	typedef std::pair<bool, bool> PropResult;
+
 	Constraint();
-	//! Returns a clone of this and adds necessary watches to the given solver.
-	/*!
-	 * The function shall create and return a copy of this constraint
-	 * to be used in the given solver. Furthermore, it shall add
-	 * necessary watches to the given solver.
-	 * \note Return 0 to indicate that cloning is not supported.
-	 */
-	virtual Constraint* cloneAttach(Solver& other) = 0;
-	
-	//! Default is to call delete this.
-	virtual void destroy(Solver* s = 0, bool detach = false);
-
-	//! Returns the type of this constraint.
-	/*!
-	 * \note The default implementation returns Constraint_t::static_constraint.
-	 */
-	virtual ConstraintType type() const;
 
 	/*!
-	 * Propagate is called for each constraint that watches p. It shall enqueue 
+	 * propagate is called for each constraint that watches p. propagate shall enqueue 
 	 * all consequences of p becoming true.
-	 * \pre p is true in s
-	 * \param s The solver in which p became true.
-	 * \param p A literal watched by this constraint that recently became true.
-	 * \param data The data-blob that this constraint passed when the watch for p was registered.
+	 * \pre p is true
+	 * \param p a literal watched by this constraint that recently became true.
+	 * \param data the data-blob that this constraint passed when the watch for p was registered.
+	 * \param s the solver in which p is true.
+	 * \return PropResult is a bool-pair where:
+	 *  - PropResult.first:  false iff the constraint is now conflicting. Otherwise true.
+	 *  - PropResult.second: false iff the constraint no longer wants to watch p. Otherwise true.
+	 *  .
 	 */
-	virtual PropResult propagate(Solver& s, Literal p, uint32& data) = 0;
+	virtual PropResult propagate(const Literal& p, uint32& data, Solver& s) = 0;
 
-	/*!
-	 * \pre This constraint is the reason for p being true in s.
-	 * \post The literals implying p were added to lits.
-	 */
-	virtual void reason(Solver& s, Literal p, LitVec& lits) = 0;
-
-	/*!
-	 * Called during minimization of learnt clauses.
-	 * \pre This constraint is the reason for p being true in s.
-	 * \return true if p can be removed from the current learnt clause, false otherwise.
-	 * \note The default implementation uses the following inefficient algorithm
-	 * \code
-	 *   LitVec temp;
-	 *   reason(s, p, temp);
-	 *   for each x in temp 
-	 *     if (!s.ccMinimize(p, rec)) return false;
-	 *   return true;
-	 * \endcode
-	 */ 
-	virtual bool minimize(Solver& s, Literal p, CCMinRecursive* rec);
-
-	//! Called when the solver undid a decision level watched by this constraint.
+	//! called when the solver undid a decision level watched by this constraint.
 	/*!
 	 * \param s the solver in which the decision level is undone.
 	 */
 	virtual void undoLevel(Solver& s);
 
 	/*!
-	 * Simplify this constraint.
+	 * \pre This constraint is the reason for p being true.
+	 * \post The literals implying p were added to lits
+	 * \return type()
+	 */
+	virtual ConstraintType reason(const Literal& p, LitVec& lits) = 0;
+	
+	/*!
+	 * simplify this constraint.
 	 * \pre s.decisionLevel() == 0 and the current assignment is fully propagated.
 	 * \return
-	 *  true if this constraint can be ignored (e.g. is satisfied),
-	 *  false otherwise.
+	 *  true if this constraint can be ignored (e.g. is satisfied)
+	 *  false otherwise
 	 * \post
-	 * If simplify returned true, this constraint has previously removed all its watches
+	 * if simplify returned true, this constraint has previously removed all its watches
 	 * from the solver.
 	 *
-	 * \note The default implementation is a noop and returns false.
+	 * \note the default implementation is a noop and returns false.
 	 */
 	virtual bool simplify(Solver& s, bool reinit = false);
+	
+	//! default is to call delete this
+	virtual void destroy();
 
-	//! Returns an estimate of the constraint's complexity relative to a clause (complexity = 1).
+	//! returns the type of this learnt constraint.
+	virtual ConstraintType type() const = 0;
+
 	virtual uint32 estimateComplexity(const Solver& s) const;
-
-	//! Shall return this if constraint is a clause, otherwise 0.
-	/*!
-	 * The default implementation returns 0.
-	 */
-	virtual ClauseHead* clause();
 protected:
 	virtual ~Constraint();
 private:
@@ -175,7 +125,7 @@ private:
 	Constraint& operator=(const Constraint&);
 };
 
-//! Base class for learnt constraints.
+//! Base class for learnt constraints
 /*!
  * Base class for constraints that can be learnt during search. A learnt constraint 
  * is a constraint with the difference that it can be created and deleted dynamically 
@@ -193,36 +143,37 @@ private:
 class LearntConstraint : public Constraint {
 public:
 	LearntConstraint();
-	//! Returns the type of this learnt constraint.
-	/*!
-	 * \note The default implementation returns Constraint_t::learnt_conflict.
-	 */
-	ConstraintType type() const;
-
 	/*!
 	 * Shall return true if this constraint can't be deleted because it 
 	 * currently implies one ore more literals and false otherwise.
 	 */
 	virtual bool locked(const Solver& s) const = 0;
 
-	//! Returns the activity of the constraint.
+	/*!
+	 * Called once before this learnt constraint is removed from the solver's 
+	 * learnt db. Shall remove all watches this constraint has registered with the solver.
+	 * \pre locked() == false
+	 */
+	virtual void removeWatches(Solver& s) = 0;
+
+	//! returns the activity of the constraint.
 	/*!
 	 * \note A solver uses the activity-value in order to establish an ordering
 	 * of learnt constraints. Whenever a solver needs to delete some learnt constraints it
 	 * selects from the unlocked ones those with a low activity-value.
-	 * \note The default-implementation always returns 0.
+	 * \note The default-implementation always returns 0
 	 */
-	virtual Activity activity() const;
+	virtual uint32 activity() const;
 	
 	//! Asks the constraint to decrease its activity.
 	virtual void decreaseActivity();
-	
-	//! Shall return 0 if either !t.inSet(type()) or this constraint is satisfied w.r.t the current assignment.
+
+	//! Shall return true if this constraint is satisfied w.r.t the current assignment
 	/*!
-	 * If this constraint is currently not satisfied and t.inSet(type()), shall return type()
-	 * and freeLits shall contain all currently unassigned literals of this constraint.
+	 * If this function returns false, freeLits shall contain some (or all) currently
+	 * unassigned literals of this constraint.
 	 */
-	virtual uint32 isOpen(const Solver& s, const TypeSet& t, LitVec& freeLits) = 0;
+	virtual bool isSatisfied(const Solver& s, LitVec& freeLits) const = 0;
 protected:
 	~LearntConstraint();
 };
@@ -265,24 +216,22 @@ public:
 		priority_lookahead   = 200, /**< default lookahead priority */
 		priority_general     = 300, /**< default general priority   */
 		priority_lowest      = 1024 /**< lowest possible priority   */
+		
 	};
-	//! Returns a value representing the priority of this propagator.
+	//! returns a value representing the priority of this propagator
 	/*!
 	 * The priority is used to order sequences of post propagators and to
 	 * classify post propagators w.r.t the three classes: det_single, det_multi, and
 	 * multi.
-	 * \note The default implementation returns priority_single.
+	 * \note The default implementation returns priority_single
 	 * \note See class description for an overview of the three priority classes.
 	 */
 	virtual uint32 priority() const;
 
-	//! Called once after all constraints were added to solver.
-	virtual bool   init(Solver& s);
-
-	//! Shall enqueue new assignments to be propagated.
+	//! shall enqueue new assignments to be propagated
 	/*!
 	 * \pre    the assignment is fully propagated.
-	 * \param  s The solver in which this object is used.
+	 * \param  s The solver in which this object is used
 	 * \return 
 	 *   - false if propagation led to conflict
 	 *   - true otherwise
@@ -298,26 +247,45 @@ public:
 	 */
 	virtual bool propagate(Solver& s) = 0;
 
-	//! Clears internal state of this object and aborts any active propagation.
+	
+	//! clears internal state of this object and aborts any active propagation.
 	/*!
 	 * The solver containing this object calls reset() whenever a conflict is
 	 * detected during propagation.
-	 * \note The default implementation is a noop.
+	 * \note The default implementation is a noop
 	 */
 	virtual void reset();
 
-	//! Is the current total assignment a model?
+	//! is the current total assignment a model?
 	/*!
 	 * \pre the assignment is total and not conflicting
 	 * \return
 	 *  - true if the assignment is a model w.r.t this post propagator
 	 *  - false otherwise
-	 * \post If the function returned true, s.numFreeVars() == 0 && !s.hasConflict().
-	 *       Otherwise, s.numFreeVars() > 0 || s.hasConflict().
+	 * \post if false is returned, the post propagator must have forced a
+	 *  conflict and at least one conflicting literal must be assigned on
+	 *  the current decision level.
 	 */
 	virtual bool isModel(Solver& s);
 
-	//! Propagates the current assignment until a fixpoint is reached w.r.t this post propagator.
+	//! checks whether there is a model that is symmetric to the current model
+	/*!
+	 * The function shall check for and (optionally) expand symmetric models, 
+	 * i.e. models that differ only in the assignment of variables outside of the 
+	 * solver's assignment. 
+	 * \param s      The solver in which this object is used
+	 * \param expand If true, symmetric models shall be expanded. Otherwise they
+	 *               they shall be ignored.
+	 * \pre the current assignment is a model
+	 * \return 
+	 *   - true, if there are symmetric models and expand is true
+	 *   - false, otherwise.
+	 * \note the default implementation always returns false
+	 */ 
+	virtual bool nextSymModel(Solver& s, bool expand);
+
+
+	//! propagates the current assignment until a fixpoint is reached w.r.t this post propagator
 	/*!
 	 * This function implements a basic propagation loop that calls
 	 * PostPropagator::propagate(Solver& s) until a fixpoint is reached or
@@ -326,23 +294,22 @@ public:
 	 *   Normally, subclasses only need to implement 
 	 *   PostPropagator::propagate(Solver& s).
 	 *
-	 * \param  s The solver in which this object is used.
+	 * \param  s The solver in which this object is used
 	 * \return false if propagation led to conflict, true otherwise
-	 * \pre    The assignment is fully propagated.
-	 * \post   A fixpoint was reached or propagation led to a conflict.
+	 * \pre    the assignment is fully propagated.
+	 * \post   a fixpoint was reached or propagation led to a conflict.
 	 * \note   The default implementation implements the following loop:
-	 *   REPEAT:
-	 *     if (!propagate())            return false;
-	 *     if (s.queueSize() == 0)      return true;
+	 *   while (propagate() && s.queueSize() > 0) 
 	 *     if (!s.propagateUntil(this)) return false;
+	 *   return true
+	 * \note   
 	 */
 	virtual bool propagateFixpoint(Solver& s);
 protected:
-	//! PostPropagators are not clonable by default.
-	Constraint* cloneAttach(Solver&) { return 0; }
 	// Constraint interface - noops
-	PropResult propagate(Solver&, Literal, uint32&);
-  void       reason(Solver&, Literal, LitVec& );
+	PropResult     propagate(const Literal&, uint32&, Solver&);
+	ConstraintType reason(const Literal& p, LitVec& lits);
+	ConstraintType type() const;
 private:
 	PostPropagator(const PostPropagator&);
 	PostPropagator& operator=(const PostPropagator&);
@@ -375,20 +342,20 @@ private:
  * 
  * From the 64-bits the first 2-bits encode the type stored:
  *  - 00: Pointer to constraint
- *  - 01: ternary constraint (i.e. two literals stored in the remaining 62 bits). 
- *  - 10: binary constraint (i.e. one literal stored in the highest 31 bits)
+ *  - 01: binary constraint (i.e. one literal stored in the highest 31 bits)
+ *  - 11: ternary constraint (i.e. two literals stored in the remaining 62 bits). 
  * 
  */
 class Antecedent {
 public:
-	enum Type { generic_constraint = 0, ternary_constraint = 1, binary_constraint = 2};
-	//! Creates a null Antecedent. 
+	enum Type { generic_constraint = 0, binary_constraint = 1, ternary_constraint = 3};
+	//! creates a null Antecedent. 
 	/*!
 	 * \post: isNull() == true && type == generic_constraint
 	 */
 	Antecedent() : data_(0) {}
 	
-	//! Creates an Antecedent from the literal p.
+	//! creates an Antecedent from the literal p
 	/*!
 	 * \post: type() == binary_constraint && firstLiteral() == p
 	 */
@@ -398,7 +365,7 @@ public:
 		assert(type() == binary_constraint && firstLiteral() == p);
 	}
 	
-	//! Creates an Antecedent from the literals p and q.
+	//! creates an Antecedent from the literals p and q
 	/*!
 	 * \post type() == ternary_constraint && firstLiteral() == p && secondLiteral() == q
 	 */
@@ -409,7 +376,7 @@ public:
 		assert(type() == ternary_constraint && firstLiteral() == p && secondLiteral() == q);
 	}
 
-	//! Creates an Antecedent from the Constraint con.
+	//! creates an Antecedent from the Constraint con
 	/*!
 	 * \post type() == generic_constraint && constraint() == con
 	 */
@@ -417,20 +384,17 @@ public:
 		assert(type() == generic_constraint && constraint() == con);
 	}
 
-	//! Returns true if this antecedent does not refer to any constraint.
+	//! returns true if this antecedent does not refer to any constraint.
 	bool isNull() const {
 		return data_ == 0;
 	}
 
-	//! Returns the antecedent's type.
+	//! returns the antecedent's type.
 	Type type() const {
 		return Type( data_ & 3 );
 	}
-	
-	//! Returns true if the antecedent is a learnt nogood.
-	bool learnt() const { return data_ && (data_ & 3u) == 0 && constraint()->type() != Constraint_t::static_constraint; }
-	
-	//! Extracts the constraint-pointer stored in this object.
+
+	//! extracts the constraint-pointer stored in this object
 	/*!
 	 * \pre type() == generic_constraint
 	 */
@@ -439,7 +403,7 @@ public:
 		return (Constraint*)(uintp)data_;
 	}
 	
-	//! Extracts the first literal stored in this object.
+	//! extracts the first literal stored in this object.
 	/*!
 	 * \pre type() != generic_constraint
 	 */
@@ -448,7 +412,7 @@ public:
 		return Literal::fromIndex(static_cast<uint32>(data_ >> 33));
 	}
 	
-	//! Extracts the second literal stored in this object.
+	//! extracts the second literal stored in this object.
 	/*!
 	 * \pre type() == ternary_constraint
 	 */
@@ -457,53 +421,38 @@ public:
 		return Literal::fromIndex( static_cast<uint32>(data_>>1) >> 1 );
 	}
 
-	//! Returns the reason for p.
+	//! returns the reason for p
 	/*!
 	 * \pre !isNull()
 	 */
-	void reason(Solver& s, Literal p, LitVec& lits) const {
+	ConstraintType reason(const Literal& p, LitVec& lits) const {
 		assert(!isNull());
 		Type t = type();
 		if (t == generic_constraint) {
-			constraint()->reason(s, p, lits);
+			return constraint()->reason(p, lits);
 		}
 		else {
 			lits.push_back(firstLiteral());
 			if (t == ternary_constraint) {
 				lits.push_back(secondLiteral());
 			}
-		}
-	}
-	template <class S>
-	bool minimize(S& s, Literal p, CCMinRecursive* rec) const {
-		assert(!isNull());
-		Type t = type();
-		if (t == generic_constraint) {
-			return constraint()->minimize(s, p, rec);
-		}
-		else {
-			return s.ccMinimize(firstLiteral(), rec)
-				&& (t != ternary_constraint || s.ccMinimize(secondLiteral(), rec));
+			return Constraint_t::short_constraint;
 		}
 	}
 
-	//! Returns true iff the antecedent refers to the constraint con.
+	//! returns true iff the antecedent refers to the constraint con
 	bool operator==(const Constraint* con) const {
-		return static_cast<uintp>(data_) == reinterpret_cast<uintp>(con);
+		return data_ == reinterpret_cast<uintp>(con);
 	}
 
-	//! Checks whether the imlementation-assumptions hold on this platform.
+	//! checks whether the imlementation-assumptions hold on this platform
 	/*! 
 	 * throws PlatformError on error
 	 */
-	static bool checkPlatformAssumptions();
-
-	uint64  asUint() const { return data_; }
-	uint64& asUint()       { return data_; }
+	static bool checkPlatformAssumptions(); 
 private:
 	uint64 data_;
 };
-
 
 class PlatformError : public ClaspError {
 public:

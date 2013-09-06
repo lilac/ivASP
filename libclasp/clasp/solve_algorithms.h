@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2012, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -25,268 +25,336 @@
 #pragma once
 #endif
 
-#include <clasp/solver_strategies.h>
+#include <clasp/literal.h>
+#include <clasp/constraint.h>
 
 /*!
  * \file 
- * Defines top-level functions for solving problems.
+ * Defines top-level functions for solving csp-problems.
  */
 namespace Clasp { 
 
-template <class T>
-struct Range {
-	Range(T x, T y) : lo(x), hi(y) { if (x > y)  { hi = x;  lo = y; } }
-	T clamp(T val) const { 
-		if (val < lo) return lo;
-		if (val > hi) return hi;
-		return val;
+class Solver;
+class MinimizeConstraint;
+struct SearchLimits {
+	int64 conflicts;
+	int64 restarts;
+	bool  update(uint64 cfl, uint64 r) {
+		return (conflicts -= static_cast<int64>(cfl)) > 0
+			&&   (restarts  -= static_cast<int64>(r))   > 0;
 	}
-	T lo;
-	T hi;
 };
-typedef Range<uint32> Range32;
+
+//! Interface for enumerating models
+class Enumerator : public Constraint {
+public:
+	class ProgressReport {
+	public:
+		ProgressReport();
+		virtual ~ProgressReport();
+		//! the solver is about to (re-)start
+		virtual void reportRestart(const Solver& /* s */, uint64 /* maxCfl */, uint32 /* maxL */) {}
+	private:
+		ProgressReport(const ProgressReport&);
+		ProgressReport& operator=(const ProgressReport&);
+	};
+	//! Interface used by the enumerator to report important events
+	class Report : public ProgressReport {
+	public:
+		Report();
+		//! the solver has found a new model
+		virtual void reportModel(const Solver& /* s */, const Enumerator& /* self */) {}
+		//! enumeration has terminated
+		virtual void reportSolution(const Solver& /* s */, const Enumerator& /* self */, bool /* complete */) {}
+	};
+	explicit Enumerator(Report* r = 0);
+	virtual ~Enumerator();
+
+	enum { LIMIT_BIT = 7 };
 	
-//! Aggregates restart-parameters to configure restarts during search.
-/*!
- * \see ScheduleStrategy
- */
-struct RestartParams {
-	RestartParams() : sched(), counterRestart(0), counterBump(9973), shuffle(0), shuffleNext(0), cntLocal(0), dynRestart(0), bndRestart(0), rstRestart(0) {}
-	void disable();
-	bool dynamic()     const { return dynRestart != 0; }
-	bool local()       const { return cntLocal   != 0; }
-	bool bounded()     const { return bndRestart != 0; }
-	bool resetOnModel()const { return rstRestart != 0; }
-	ScheduleStrategy sched; /**< Restart schedule to use. */
-	uint16 counterRestart;  /**< Apply counter implication bump every counterRestart restarts (0: disable). */
-	uint16 counterBump;     /**< Bump factor for counter implication restarts. */
-	uint32 shuffle    :14;  /**< Shuffle program after shuffle restarts (0: disable). */
-	uint32 shuffleNext:14;  /**< Re-Shuffle program every shuffleNext restarts (0: disable). */
-	uint32 cntLocal   : 1;  /**< Count conflicts globally or relative to current branch? */
-	uint32 dynRestart : 1;  /**< Dynamic restarts enabled? */
-	uint32 bndRestart : 1;  /**< Allow (bounded) restarts after first solution was found. */
-	uint32 rstRestart : 1;  /**< Repeat restart seq. after each solution. */
+	//! sets the report callback to be used during enumeration
+	/*!
+	 * \note Ownership is *not* transferred and r must be valid
+	 * during complete search
+	 */
+	void setReport(Report* r);
+
+	//! enables progress reporting via the given report callback
+	void enableProgressReport(ProgressReport* r);
+
+	//! if true, does a search-restart after each model found
+	void setRestartOnModel(bool r);
+	
+	//! Sets the minimize constraint to be used during enumeration
+	/*!
+	 * \note Ownership is transferred.
+	 */
+	void setMinimize(MinimizeConstraint* min);
+	const MinimizeConstraint* minimize() const { return mini_; }
+
+	//! initializes the enumerator and sets the number of models to compute. 
+	/*!
+	 * Must be called once before search is started
+	 * \note In the incremental setting, init must be called once for each incremental step
+	 * \note nm = 0 means compute all models
+	 */
+	void init(Solver& s, uint64 nm);
+
+	//! sets a search limit for the subsequent search
+	/*!
+	 * \param maxCfl maximum number of conflicts (<= 0: no limit)
+	 * \param maxRestarts maximum number of restarts (<= 0: no limit)
+	 */
+	void setSearchLimit(int64 maxCfl, int64 maxRestarts);
+
+	//! executes the next search iteration under the current search limit (if any)
+	/*!
+	 * The function first applies any active search limit to maxCfl,
+	 * notifies the installed ProgressReport callback (if set), and then calls
+	 * Solver::search() on the given solver with the given parameters.
+	 *
+	 * \return 
+	 *   The result of Solver::search(). If the search limit has been reached, 
+	 *   the returned value has the LIMIT_BIT set, i.e. test_bit(r, LIMIT_BIT)
+	 *   is true.
+	 * \note 
+	 *   The function should be called in a loop until either enough models
+	 *   have been enumerated, value_false is returned, or the search limit has been reached.
+	 */
+	ValueRep search(Solver& s, uint64 maxCfl, uint32 maxLearnts, double randFreq, bool localR);
+
+	//! called whenever the solver has found a model.
+	/*!
+	 * The return value determines how search proceeds.
+	 * If false is returned, the search is stopped.
+	 * Otherwise the enumerator must have removed at least one
+	 * decision level and the search continues from the new
+	 * decision level.
+	 * \pre The solver contains a model and DL = s.decisionLevel()
+	 * \post If true is returned:
+	 *  - s.decisionLevel() < DL and s.decisionLevel() >= s.rootLevel()
+	 */
+	bool backtrackFromModel(Solver& s);
+	
+	//! Shall be called once after search has stopped
+	void endSearch(Solver& s, bool complete);
+protected:
+	//! Defaults to a noop
+	PropResult propagate(const Literal&, uint32&, Solver&);
+	//! Defaults to a noop
+	ConstraintType reason(const Literal&, LitVec&);
+	//! Defaults to return Constraint_t::native_constraint
+	ConstraintType type() const;
+	
+	uint32 getHighestActiveLevel() const { return activeLevel_; }
+	bool continueFromModel(Solver& s);
+	
+	virtual void doInit(Solver& s) = 0;
+	virtual bool backtrack(Solver& s) = 0;
+	virtual void updateModel(Solver& s);
+	virtual bool ignoreSymmetric() const;
+	virtual void terminateSearch(Solver& s); 
+private:
+	Enumerator(const Enumerator&);
+	Enumerator& operator=(const Enumerator&);
+	bool onModel(Solver& s);
+	uint64              numModels_;
+	Report*             report_;
+	ProgressReport*     progress_;
+	MinimizeConstraint* mini_;
+	SearchLimits*       limits_;
+	uint32              activeLevel_;
+	bool                restartOnModel_;
 };
 
-//! Aggregates parameters for the nogood deletion heuristic used during search.
-struct ReduceParams {
-	ReduceParams() : cflSched(ScheduleStrategy::none()), growSched(ScheduleStrategy::def())
-		, fInit(1.0f/3.0f)
-		, fMax(3.0f)
-		, fGrow(1.1f)
-		, initRange(10, UINT32_MAX)
-		, maxRange(UINT32_MAX) {}
-	void   disable();
-	uint32 getBase(const SharedContext& ctx)   const;
-	uint32 initLimit(const SharedContext& ctx) const { return getLimit(getBase(ctx), fInit, initRange); }
-	uint32 maxLimit(const SharedContext& ctx)  const { 
-		return getLimit(getBase(ctx), fMax, Range32(initLimit(ctx), maxRange)); 
-	}
-	bool   estimate() const { return strategy.estimate != 0; }
-	float  fReduce()  const { return strategy.fReduce / 100.0f; }
-	float  fRestart() const { return strategy.fRestart/ 100.0f; }
-	static uint32 getLimit(uint32 base, double f, const Range<uint32>& r);
-	ScheduleStrategy cflSched;   /**< Conflict-based deletion schedule.               */
-	ScheduleStrategy growSched;  /**< Growth-based deletion schedule.                 */
-	ReduceStrategy   strategy;   /**< Strategy to apply during nogood deletion.       */
-	float            fInit;      /**< Initial limit. X = P*fInit clamped to initRange.*/
-	float            fMax;       /**< Maximal limit. X = P*fMax  clamped to maxRange. */
-	float            fGrow;      /**< Growth factor for db.                           */
-	Range32          initRange;  /**< Allowed range for initial limit.                */
-	uint32           maxRange;   /**< Allowed range for maximal limit: [initRange.lo,maxRange]*/
-};
-
-//! Type for holding global solve limits.
-struct SolveLimits {
-	explicit SolveLimits(uint64 conf = UINT64_MAX, uint64 r = UINT64_MAX) 
-		: conflicts(conf)
-		, restarts(r) {
-	}
-	bool   reached() const { return conflicts == 0 || restarts == 0; }
-	uint64 conflicts; /*!< Number of conflicts. */
-	uint64 restarts;  /*!< Number of restarts.  */
-};
-
-//! Type for holding pre-solve options.
-struct InitParams {
-	InitParams() : randRuns(0), randConf(0), lookType(0), lookOps(0) {}
-	uint16 randRuns; /*!< Number of initial randomized-runs. */
-	uint16 randConf; /*!< Number of conflicts comprising one randomized-run. */
-	uint16 lookType; /*!< Type of lookahead operations. */
-	uint16 lookOps;  /*!< Max. number of lookahead operations (0: no limit). */
-};
 ///////////////////////////////////////////////////////////////////////////////
 // Parameter-object for the solve function
 // 
 ///////////////////////////////////////////////////////////////////////////////
-//! Parameter-Object for configuring search-parameters.
+
+//! Aggregates restart-parameters to configure restarts during search.
+/*!
+ * clasp currently supports four different restart-strategies:
+ *  - fixed-interval restarts: restart every n conflicts
+ *  - geometric-restarts: restart every n1 * n2^k conflict (k >= 0)
+ *  - inner-outer-geometric: similar to geometric but sequence is repeated once bound outer is reached. Then, outer = outer*n2
+ *  - luby's restarts: see: Luby et al. "Optimal speedup of las vegas algorithms."
+ *  .
+ */
+class RestartParams {
+private:
+	double inc_;
+	uint32 base_;
+	uint32 outer_;
+public:
+	RestartParams() : inc_(1.5), base_(100), outer_(0), local(false), bounded(false), resetOnModel(false) {}
+	double inc()  const { return inc_;   }
+	uint32 base() const { return base_;  }
+	uint32 outer()const { return outer_; }
+	bool local;         /**< local restarts, i.e. restart if number of conflicts in *one* branch exceed threshold */
+	bool bounded;       /**< allow (bounded) restarts after first solution was found */
+	bool resetOnModel;  /**< repeat restart strategy after each solution */
+	//! configure restart strategy
+	/*!
+	 * \param base    initial interval or run-length
+	 * \param inc     grow factor
+	 * \param outer   max restart interval, repeat sequence if reached
+	 * \note
+	 *  if base is equal to 0, restarts are disabled.
+	 *  if inc is equal to 0, luby-restarts are used and base is interpreted as run-length
+	 */
+	void setStrategy(uint32 base, double inc, uint32 outer = 0) {
+		base_    = base;
+		outer_   = outer;
+		if (inc >= 1.0 || inc == 0.0) {
+			inc_   = inc;
+		}
+	}
+};
+
+//! Aggregates parameters for the nogood deletion heuristic used during search
+class ReduceParams {
+private:
+	double frac_;
+	double inc_;
+	double max_;
+	uint32 base_;
+public:
+	ReduceParams() : frac_(3.0), inc_(1.1), max_(3.0), base_(5000), reduceOnRestart(false), estimate(false), disable(false) {}
+	
+	//! sets the initial problem size used to compute initial db size
+	void setProblemSize(uint32 base) { base_ = base; }
+
+	double inc()  const { return inc_; }
+	double frac() const { return frac_; }
+	
+	uint32 base() const { return static_cast<uint32>(base_/frac_); }
+	uint32 max()  const { return static_cast<uint32>(std::min(base_*max_, double(std::numeric_limits<uint32>::max()))); }
+	
+	bool reduceOnRestart; /**< delete some nogoods on each restart */
+	bool estimate;        /**< use estimate of problem complexity to init problem size */
+	bool disable;         /**< do not delete any nogoods */
+	
+	//! configure reduce strategy
+	/*!
+	 * \param frac     init db size to problemSize/frac
+	 * \param inc      grow factor applied after each restart
+	 * \param maxF     stop growth once db size is > problemSize*maxF
+	 */
+	void setStrategy(double frac, double inc, double maxF) {
+		frac_ = std::max(0.0001, frac);
+		inc_  = std::max(1.0   , inc);
+		max_  = std::max(0.0001, maxF);
+	}
+};
+
+//! Parameter-Object for configuring search-parameters
 /*!
  * \ingroup solver
  */
 struct SolveParams {
-	//! Creates a default-initialized object.
+	//! creates a default-initialized object.
 	/*!
 	 * The following parameters are used:
 	 * restart      : quadratic: 100*1.5^k / no restarts after first solution
+	 * shuffle      : disabled
 	 * deletion     : initial size: vars()/3, grow factor: 1.1, max factor: 3.0, do not reduce on restart
 	 * randomization: disabled
 	 * randomProp   : 0.0 (disabled)
+	 * enumerator   : no
 	 */
 	SolveParams();
 	
 	RestartParams restart;
 	ReduceParams  reduce;
-	InitParams    init;
-
-	//! Sets the randomization-parameters to use during path initialization.
+	
+	//! Enumerator to use during search
 	/*!
-	 * \param runs Number of initial randomized-runs.
-	 * \param cfl  Number of conflicts comprising one randomized-run.
+	 * \note Ownership is transferred
 	 */
-	bool setRandomizeParams(uint32 runs, uint32 cfls) {
-		if (!runs || !cfls) { runs = cfls = 0; }
-		init.randRuns = (uint16)std::min(runs, (1u<<16)-1);
-		init.randConf = (uint16)std::min(cfls, (1u<<16)-1);
-		return true;
+	void setEnumerator(Enumerator* e) { enumerator_.reset(e); }	
+
+	//! sets the shuffle-parameters to use during search.
+	/*!
+	 * \param first   Shuffle program after first restarts
+	 * \param next    Re-Shuffle program every next restarts
+	 * \note
+	 *  if first is equal to 0, shuffling is disabled.
+	 */
+	void setShuffleParams(uint32 first, uint32 next) {
+		shuffleFirst_ = first;
+		shuffleNext_  = next;
 	}
 
-	//! Sets the probability with which choices are made randomly instead of with the installed heuristic.
-	bool setRandomProbability(double p) {
+	//! sets the randomization-parameters to use during search.
+	/*!
+	 * \param runs number of initial randomized-runs
+	 * \param cfl number of conflicts comprising one randomized-run
+	 */
+	void setRandomizeParams(uint32 runs, uint32 cfls) {
+		if (runs > 0 && cfls > 0) {
+			randRuns_ = runs;
+			randConflicts_ = cfls;
+		}
+	}
+
+	//! sets the probability with which choices are made randomly instead of with the installed heuristic.
+	void setRandomProbability(double p) {
 		if (p >= 0.0 && p <= 1.0) {
 			randFreq_ = p;
 		}
-		return randFreq_ == p;
 	}
-	// accessors
-	uint32  randRuns()          const { return init.randRuns; }
-	uint32  randConflicts()     const { return init.randConf; }
-	double  randomProbability() const { return randFreq_;     }
-private:
-	double randFreq_;
-};
-//! Object holding options for one solver instance.
-struct SolverConfig {
-	explicit    SolverConfig(Solver& s) : solver(&s) {}
-	void        initFrom(const SolverConfig& other);
-	Solver*     solver;
-	SolveParams params;
-};
-///////////////////////////////////////////////////////////////////////////////
-// Basic solve functions
-///////////////////////////////////////////////////////////////////////////////
+	double computeReduceBase(const Solver& s) const;
 
-//! Basic sequential search.
+	// accessors
+	uint32  randRuns()      const { return randRuns_; }
+	uint32  randConflicts() const { return randConflicts_; }
+	double  randomProbability() const { return randFreq_; }
+	
+	uint32      shuffleBase() const { return shuffleFirst_; }
+	uint32      shuffleNext() const { return shuffleNext_; }
+	Enumerator* enumerator()  const { return enumerator_.get(); }	
+private:
+	typedef std::auto_ptr<Enumerator> EnumPtr;
+	double        randFreq_;
+	EnumPtr       enumerator_;
+	uint32        randRuns_;
+	uint32        randConflicts_;
+	uint32        shuffleFirst_;
+	uint32        shuffleNext_;
+};
+
+//! Search without assumptions
 /*!
  * \ingroup solver
  * \relates Solver
- * \param ctx The context containing the problem.
- * \param p   The solve parameters to use.
- * \param lim Optional solve limit. 
+ * \param s The Solver containing the problem.
+ * \param p solve parameters to use.
  *
  * \return
- *  - true:  if the search stopped before the search-space was exceeded.
+ *  - true: if the search stopped before the search-space was exceeded.
  *  - false: if the search-space was completely examined.
  * 
  */
-bool solve(SharedContext& ctx, const SolveParams& p, const SolveLimits& lim = SolveLimits());
+bool solve(Solver& s, const SolveParams& p);
 
-//! Basic sequential search under assumptions.
+//! Search under a set of initial assumptions 
 /*!
  * \ingroup solver
  * \relates Solver
  * The use of assumptions allows for incremental solving. Literals contained
  * in assumptions are assumed to be true during search but are undone before solve returns.
  *
- * \param ctx The context containing the problem.
- * \param p   The solve parameters to use.
- * \param assumptions The list of initial unit-assumptions.
- * \param lim Optional solve limit.
+ * \param s The Solver containing the problem.
+ * \param assumptions list of initial unit-assumptions
+ * \param p solve parameters to use.
  *
  * \return
- *  - true:  if the search stopped before the search-space was exceeded.
+ *  - true: if the search stopped before the search-space was exceeded.
  *  - false: if the search-space was completely examined.
  * 
  */
-bool solve(SharedContext& ctx, const SolveParams& p, const LitVec& assumptions, const SolveLimits& lim = SolveLimits());
+bool solve(Solver& s, const LitVec& assumptions, const SolveParams& p);
 
-///////////////////////////////////////////////////////////////////////////////
-// General solve
-///////////////////////////////////////////////////////////////////////////////
-struct SolveEvent_t { enum Type {progress_msg = 1, progress_state = 2, progress_path = 3}; };
-struct SolveMsgEvent : SolveEvent {
-	SolveMsgEvent(const Solver& s, const char* m) : SolveEvent(s, SolveEvent_t::progress_msg), msg(m) {}
-	const char* msg;
-};
-struct SolveStateEvent : SolveEvent {
-	SolveStateEvent(const Solver& s, const char* m, double exitTime = -1.0) : SolveEvent(s, SolveEvent_t::progress_state), state(m), time(exitTime) {}
-	const char* state; // state that is entered or left
-	double      time;  // < 0: enter, else exit
-};
-struct SolvePathEvent : SolveEvent {
-	enum EventType { event_none = 0, event_deletion = 'D', event_grow = 'G', event_model = 'M', event_restart = 'R' };
-	SolvePathEvent(const Solver& s, EventType t, uint64 cLim, uint32 lLim) : SolveEvent(s, SolveEvent_t::progress_path), cLimit(cLim), lLimit(lLim), evType(t) {}
-	uint64    cLimit; // next conflict limit
-	uint32    lLimit; // next learnt limit
-	EventType evType; // type of path event
-};
-//! Interface for solve algorithms.
-/*!
- * \ingroup solver
- * \relates Solver
- * SolveAlgorithm objects wrap an enumerator and
- * implement concrete solve algorithms.
- */
-class SolveAlgorithm {
-public:
-	/*!
-	 * \param lim    An optional solve limit applied in solve().
-	 */
-	explicit SolveAlgorithm(const SolveLimits& limit = SolveLimits());
-	virtual ~SolveAlgorithm();
-
-	//! Force termination of current solve process.
-	/*!
-	 * Shall return true if termination is supported, otherwise false.
-	 */
-	virtual bool   terminate() = 0;
-	virtual bool   hasErrors() const { return false; }
-	//! Runs the solve algorithm.
-	/*!
-	 * \param ctx    A fully initialized context object containing the problem.
-	 * \param p      The solve parameters for the master solver ctx.master()
-	 * \param assume A list of initial unit-assumptions.
-	 *
-	 * \return
-	 *  - true:  if the search stopped before the search-space was exceeded.
-	 *  - false: if the search-space was completely examined.
-	 *
-	 * \note 
-	 * The use of assumptions allows for incremental solving. Literals contained
-	 * in assumptions are assumed to be true during search but are undone before solve returns.
-	 */
-	bool solve(SharedContext& ctx, const SolveParams& p, const LitVec& assume);
-protected:
-	//! The default implementation simply forwards the call to the enumerator.
-	virtual bool  backtrackFromModel(Solver& s);
-	virtual bool  doSolve(Solver& s, const SolveParams& p) = 0;
-	bool          initPath(Solver& s,  const LitVec& gp, InitParams& params);
-	ValueRep      solvePath(Solver& s, const SolveParams& p, SolveLimits& inOut);
-	const LitVec& getInitialPath()     const { return assumptions_; }
-	const SolveLimits& getSolveLimits()const { return limits_; }
-	void               setSolveLimits(const SolveLimits& x) { limits_ = x; }
-private:
-	SolveAlgorithm(const SolveAlgorithm&);
-	SolveAlgorithm& operator=(const SolveAlgorithm&);
-	SolveLimits    limits_;
-	LitVec         assumptions_;
-};
-//! A basic algorithm for single-threaded sequential solving.
-class SimpleSolve : public SolveAlgorithm {
-public:
-	SimpleSolve(const SolveLimits& lim) : SolveAlgorithm(lim) {}
-	bool   terminate();
-private:
-	bool   doSolve(Solver& s, const SolveParams& p);
-};
 }
 #endif

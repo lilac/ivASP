@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2009, 2012 Benjamin Kaufmann
+// Copyright (c) 2009, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -39,7 +39,7 @@ namespace Clasp {
 struct VarScore {
 	VarScore() { clear(); }
 	void clear() { std::memset(this, 0, sizeof(VarScore)); }
-	//! Mark literal p as dependent.
+	//! Mark literal p as dependent
 	void setSeen( Literal p )    { seen_ |= uint32(p.sign()) + 1; }
 	//! Is literal p dependent?
 	bool seen(Literal p) const   { return (seen_ & (uint32(p.sign())+1)) != 0; }
@@ -54,14 +54,14 @@ struct VarScore {
 	//! Were both literals of this var tested?
 	bool testedBoth()      const { return tested_  == 3; }
 
-	//! Sets the score for literal p to value and marks p as tested.
+	//! Sets the score for literal p to value and marks p as tested
 	void setScore(Literal p, LitVec::size_type value) {
 		if (value > (1U<<14)-1) value = (1U<<14)-1;
 		if (p.sign()) nVal_ = uint32(value);
 		else          pVal_ = uint32(value);
 		setTested(p);
 	}
-	//! Sets the score of a dependent literal p to min(sc, current score).
+	//! Sets the score of a dependent literal p to min(sc, current score)
 	void setDepScore(Literal p, uint32 sc) {
 		if (!seen(p) || score(p) > sc) {
 			if (sc > (1U<<14)-1) sc = (1U<<14)-1;
@@ -73,8 +73,8 @@ struct VarScore {
 	uint32 score(Literal p) const { return p.sign() ? nVal_ : pVal_; }
 	//! Returns the scores of the two literals of a variable.
 	/*!
-	 * \param[out] mx The maximum score.
-	 * \param[out] mn The minimum score.
+	 * \param[out] mx the maximum score
+	 * \param[out] mn the minimum score
 	 */
 	void score(uint32& mx, uint32& mn) const {
 		if (nVal_ > pVal_) {
@@ -86,7 +86,7 @@ struct VarScore {
 			mn = nVal_;
 		}
 	}
-	//! Returns the sign of the literal that has the higher score.
+	//! returns the sign of the literal that has the higher score.
 	bool prefSign() const { return nVal_ > pVal_; }
 
 	uint32 nVal() const { return nVal_; }
@@ -98,7 +98,7 @@ private:
 	uint32 tested_: 2;
 };
 
-//! A small helper class used to score the result of a lookahead operation.
+//! A small helper class used to score the result of a lookahead operation
 struct ScoreLook {
 	enum Mode { score_max, score_max_min };
 	typedef PodVector<VarScore>::type VarScores; /**< A vector of variable-scores */
@@ -138,60 +138,48 @@ class Lookahead : public PostPropagator {
 public:
 	//! Defines the supported lookahead-types
 	enum Type { 
-		no_lookahead=0,   /**< Dummy value */
 		atom_lookahead,   /**< Test only atoms in both phases */
 		body_lookahead,   /**< Test only bodies in both phases */
 		hybrid_lookahead, /**< Test atoms and bodies but only their preferred decision literal */
+		no_lookahead      /**< Dummy value */
 	};
-	/*!
-	 * \param t Lookahead-type to use.
-	 */
-	explicit Lookahead(Type t, bool topLevelImps = true);
+	explicit Lookahead();
 	~Lookahead();
-	
-	bool    init(Solver& s);
-	//! Clears the lookahead list.
+	//! adds this to s and enables lookahead
+	void enable(Solver& s);
+	//! disables lookahead
+	void disable(Solver& s);
+	//! adds literal p to the lookahead list
+	void append(Literal p, bool testBoth);
+	//! clears the lookahead list
 	void    clear();
-	//! Returns true if lookahead list is empty.
-	bool    empty() const { return head()->next == head_id; }
-	//! Adds literal p to the lookahead list.
-	void    append(Literal p, bool testBoth);
-	//! Single-step lookahead on all vars in the loookahead list.
+	//! returns true if lookahead list is empty
+	bool    empty() const { return head_.next == &head_; }
+	//! single-step lookahead on all vars in the loookahead list
 	bool    propagateFixpoint(Solver& s);
-	//! Returns PostPropagator::priority_lookahead.
+	//! returns PostPropagator::priority_lookahead
 	uint32  priority() const;
-	void    destroy(Solver* s, bool detach);
-	//! Updates state with lookahead result.
-	ScoreLook score;
-	//! Returns "best" literal w.r.t scoring of last lookahead or posLit(0) if no such literal exists.
-	Literal heuristic(Solver& s);
+	//! updates state with lookahead result 
+	ScoreLook score;      
 protected:
 	friend class UnitHeuristic;
 	bool propagate(Solver& s); // called by propagateFixpoint
 	void undoLevel(Solver& s);
 	bool test(Solver& s, Literal p);
 private:
-	typedef uint32 NodeId;
-	enum { head_id = NodeId(0), undo_id = NodeId(1) };
 	struct LitNode {
-		LitNode(Literal x) : lit(x), next(UINT32_MAX) {}
+		LitNode(Literal x) : lit(x), next(0) {}
 		Literal  lit;
-		NodeId   next;
+		LitNode* next;
 	};
-	typedef PodVector<NodeId>::type  UndoStack;
-	typedef PodVector<LitNode>::type LookList;
-	void splice(NodeId n);
-	LitNode* node(NodeId n) { return &nodes_[n]; }
-	LitNode* head()         { return &nodes_[head_id]; } // head of circular candidate list
-	LitNode* undo()         { return &nodes_[undo_id]; } // head of undo list
-	bool     checkImps(Solver& s, Literal p);
-	const LitNode* head() const { return &nodes_[head_id]; }
-	LookList   nodes_; // list of literals to test
-	UndoStack  saved_; // stack of undo lists
-	LitVec     imps_;  // additional top-level implications 
-	NodeId     last_;  // last candidate in list; invariant: node(last_)->next == head_id;
-	NodeId     pos_;   // current lookahead start position
-	uint32     top_;   // size of top-level
+	typedef PodVector<LitNode*>::type UndoStack;
+	void splice(LitNode* ul);
+	UndoStack  saved_;   // stack of undo lists
+	LitNode    head_;    // head of circular candidate list
+	LitNode    undo_;    // head of undo list
+	LitNode*   last_;    // last candidate in list; invariant: last_->next == &head_
+	LitNode*   pos_;     // current lookahead start position
+	uint32     top_;     // size of top-level
 };
 
 //! Heuristic that uses the results of lookahead.
@@ -208,43 +196,44 @@ private:
  * \note The heuristic might itself apply some lookahead but only on variables that 
  *       did not fail in a previous call to Lookahead::propagateFixpoint(). I.e. if
  *       priorities are correct for all post propagators in s, the lookahead operations can't fail. 
+ *       Otherwise, the heuristic does not try to resolve the conflict. 
+ *       It simply undoes the operation and returns the offending literal.
  */
 class UnitHeuristic : public DecisionHeuristic {
 public:
 	/*!
-	 * \param t Lookahead-type to use.
+	 * \param t Lookahead-type to use
+	 * \param nant Score only atoms in NAnt(P)?
+	 * \param h alternative heuristic to use
+	 * \param m Disable failed-literal detection after m choices (-1 always keep enabled)
+	 * \note if h is 0, m is ignored
 	 */
-	explicit UnitHeuristic(Lookahead::Type t);
+	explicit UnitHeuristic(Lookahead::Type t, bool nant = false, DecisionHeuristic* h = 0, int m = -1);
 	~UnitHeuristic();
+	void startInit(const Solver& s);
 	void endInit(Solver& s);
+	void reinit(bool b);
 	void resurrect(const Solver&, Var v);
 	Literal doSelect(Solver& s);
+
+	void simplify(const Solver&  s, LitVec::size_type st)          { if (heu_) heu_->simplify(s, st); }
+	void undoUntil(const Solver& s, LitVec::size_type st)          { if (heu_) heu_->undoUntil(s, st); }
+	void updateReason(const Solver& s, const LitVec& r, Literal p) { if (heu_) heu_->updateReason(s, r, p); }
+	void newConstraint(const Solver& s, const Literal* f, LitVec::size_type x, ConstraintType t) {
+		if (heu_) heu_->newConstraint(s, f, x, t);
+	}
 private:
-	Lookahead*      look_; // lookahead propagator
-	Lookahead::Type type_; // type of lookahead & heuristic
+	Literal heuristic(Solver& s);
+	void    suicide(Solver& s);
+	Lookahead*         look_;    // lookahead propagator
+	DecisionHeuristic* heu_;     // wrapped heuristic
+	const int          maxLook_; // use lookahead for at most maxLook_ decisions
+	int                looks_;   // disable lookahead once looks_ == maxLook_
+	int                incr_;    // used in incremental setting
+	Literal            top_;     // top-level choice
+	Lookahead::Type    type_;    // type of lookahead & heuristic
+	bool               nant_;    // score only atoms in NAnt(P)?
 };
 
-class RestrictedUnit : public DecisionHeuristic {
-public:
-	~RestrictedUnit();
-	//! Extends the decision heuristic of s so that the next k choices are based on lookahead.
-	static  void decorate(Solver& s, uint32 k, Lookahead* look);
-private:
-	explicit RestrictedUnit(uint32 k, Lookahead* look, DecisionHeuristic* def);
-	void startInit(const Solver& s)        { default_->startInit(s); }
-	void resurrect(const Solver& s, Var v) { default_->resurrect(s, v); }
-	void simplify(const Solver&  s, LitVec::size_type st) { default_->simplify(s, st); }
-	void undoUntil(const Solver& s, LitVec::size_type st) { default_->undoUntil(s, st);}
-	void newConstraint(const Solver& s, const Literal* f, LitVec::size_type sz, ConstraintType t) { default_->newConstraint(s, f, sz, t); }
-	void updateReason(const Solver& s, const LitVec& lits, Literal resolveLit) { default_->updateReason(s, lits, resolveLit); }
-	bool bump(const Solver& s, const WeightLitVec& lits, double adj)           { return default_->bump(s, lits, adj); }
-	Literal selectRange(Solver& s, const Literal* first, const Literal* last)  { return default_->selectRange(s, first, last); }
-	void    endInit(Solver& s);
-	Literal doSelect(Solver& s);
-	void    destroy(Solver& s);
-	Lookahead*         look_;
-	DecisionHeuristic* default_;
-	uint32             numChoices_;
-};
 }
 #endif

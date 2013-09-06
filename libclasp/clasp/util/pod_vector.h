@@ -19,7 +19,6 @@
 //
 #ifndef BK_LIB_POD_VECTOR_H_INCLUDED
 #define BK_LIB_POD_VECTOR_H_INCLUDED
-#include "type_manip.h"
 #include <iterator>
 #include <memory>
 #include <cstring>
@@ -87,19 +86,28 @@ namespace bk_lib { namespace detail {
 		}
 		const T* first_;
 	};
+	
+	template <int i> struct Int2Type {};
 	typedef char yes_type;
 	typedef char (&no_type)[2];
 	template <class T>
 	struct IterType {
 		static yes_type isPtr(const volatile void*);
 		static no_type isPtr(...);
-		static yes_type isLong(int64);
+		static yes_type isLong(long);
 		static no_type  isLong(...);
 		static T& makeT();
 		enum { ptr = sizeof(isPtr(makeT())) == sizeof(yes_type) };
 		enum { num = sizeof(isLong(makeT())) == sizeof(yes_type) }; 
 		enum { value = ptr ? 1 : num ? 2 : 0 };
 	};
+	template <class T, class U>  struct SameType        { enum { value = 0 }; };
+	template <class T>           struct SameType<T,T>   { enum { value = 1 }; };
+	template <bool>              struct DisableIf       { typedef bool type; };
+	template <>                  struct DisableIf<true> {  };
+
+	template <bool, class T, class U> struct Select            { typedef T type; };
+	template <class T, class U>       struct Select<false,T,U> { typedef U type; };
 
 } // end namespace bk_lib::detail
 
@@ -125,11 +133,11 @@ public:
 	typedef std::reverse_iterator<iterator>           reverse_iterator;
 	typedef std::reverse_iterator<const_iterator>     const_reverse_iterator;
 	typedef          T                                value_type;	
-	typedef typename detail::if_then_else<
+	typedef typename detail::Select<
 		sizeof(typename Allocator::size_type)<=sizeof(unsigned int), 
 		typename Allocator::size_type, 
 		unsigned int>::type                           size_type;
-	typedef typename detail::if_then_else<
+	typedef typename detail::Select<
 		sizeof(typename Allocator::difference_type)<=sizeof(int), 
 		typename Allocator::difference_type, 
 		int>::type                                    difference_type;
@@ -161,7 +169,7 @@ public:
 	 * \post size() = distance between first and last.
 	 */
 	template <class Iter>
-	pod_vector(Iter first, Iter last, const allocator_type& a = allocator_type(), typename detail::disable_if<detail::IterType<Iter>::num>::type* = 0) 
+	pod_vector(Iter first, Iter last, const allocator_type& a = allocator_type(), typename detail::DisableIf<detail::IterType<Iter>::num>::type* = 0) 
 		: ebo_(0, a) {
 		insert_range(end(), first, last, typename std::iterator_traits<Iter>::iterator_category());
 	}
@@ -404,7 +412,7 @@ public:
 	 * 
 	 */
 	template <class Iter>
-	void insert(iterator pos, Iter first, Iter last, typename detail::disable_if<detail::IterType<Iter>::num>::type* = 0) {
+	void insert(iterator pos, Iter first, Iter last, typename detail::DisableIf<detail::IterType<Iter>::num>::type* = 0) {
 		insert_range(pos, first, last, typename std::iterator_traits<Iter>::iterator_category());
 	}
 
@@ -454,7 +462,7 @@ private:
 	}
 	template <class It>
 	void insert_range(iterator pos, It first, It last,  std::random_access_iterator_tag, 
-		typename detail::disable_if<detail::same_type<pointer, It>::value == 0 && detail::same_type<const_pointer, It>::value == 0>::type* = 0) {
+		typename detail::DisableIf<detail::SameType<pointer, It>::value == 0 && detail::SameType<const_pointer, It>::value == 0>::type* = 0) {
 		assert( (first < begin() || first >= end()) && "pod_vec::insert(): Precondition violated!");
 		typename allocator_type::difference_type diff = std::distance(first, last);
 		assert(diff == 0 || (static_cast<size_type>(size()+diff) > size() && "pod_vector: max size exceeded!"));

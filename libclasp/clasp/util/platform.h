@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2012, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -20,19 +20,13 @@
 
 #ifndef CLASP_PLATFORM_H_INCLUDED
 #define CLASP_PLATFORM_H_INCLUDED
+
 #ifdef _MSC_VER
 #pragma once
 #endif
 
-#define STRING2(x) #x
-#define STRING(x) STRING2(x)
-
 #if defined(_MSC_VER) && _MSC_VER >= 1200
-#define TODO(X) (__FILE__ "[" STRING(__LINE__) "] - TODO: " X)
 #include <basetsd.h>
-#if _MSC_VER >= 1600
-#include <stdint.h>
-#endif
 typedef UINT8     uint8;
 typedef UINT16    uint16;
 typedef INT32     int32;
@@ -61,7 +55,6 @@ typedef uint64_t    uint64;
 typedef int64_t     int64;
 typedef uintptr_t   uintp;
 #define BIT_MASK(x,n) ( static_cast<__typeof((x))>(1)<<(n) )
-#define TODO(X) ("TODO: " X)
 #else 
 #error unknown compiler or platform. Please add typedefs manually.
 #endif
@@ -70,12 +63,6 @@ typedef uintptr_t   uintp;
 #endif
 #ifndef UINT64_MAX
 #define UINT64_MAX (~uint64(0))
-#endif
-#ifndef INT64_MAX
-#define INT64_MAX ((int64)(UINT64_MAX >> 1))
-#endif
-#ifndef UINTP_MAX
-#define UINTP_MAX (~uintp(0))
 #endif
 
 // set, clear, toggle bit n of x and return new value
@@ -90,25 +77,5 @@ typedef uintptr_t   uintp;
 
 // return true if bit n in x is set
 #define test_bit(x,n)  ( ((x) & BIT_MASK((x),(n))) != 0 )
-
-template <class T>
-bool aligned(void* mem) {
-	uintp x = reinterpret_cast<uintp>(mem);
-#if (_MSC_VER >= 1300)
-	return (x & (__alignof(T)-1)) == 0;
-#elif defined(__GNUC__)
-	return (x & (__alignof__(T)-1)) == 0;
-#else
-	struct AL { char x; T y; };
-	return (x & (sizeof(AL)-sizeof(T))) == 0;
-#endif
-}
-
-template <bool> struct static_assertion;
-template <>     struct static_assertion<true> {};
-
-#if !defined(__cplusplus) || __cplusplus < 201103L
-#define static_assert(x, message) (void)sizeof(static_assertion< (x) >)
-#endif
 
 #endif

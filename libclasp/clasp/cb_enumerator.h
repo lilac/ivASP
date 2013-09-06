@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2011, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -24,39 +24,36 @@
 #pragma once
 #endif
 
-#include <clasp/enumerator.h>
+#include <clasp/solve_algorithms.h>
 
-namespace Clasp {
-
-//! Enumerator for computing the brave/cautious consequences of a logic program.
-/*!
- * \ingroup enumerator
- */
+namespace Clasp { 
+//! Enumerator for computing the brave/cautious consequences of a logic program
 class CBConsequences : public Enumerator {
 public:
 	enum Consequences_t { brave_consequences, cautious_consequences };
 	/*!
-	 * \param type Type of consequences to compute.
+	 * \param type type of consequences to compute
 	 */
 	explicit CBConsequences(Consequences_t type);
 	~CBConsequences();
 	Consequences_t  cbType()    const { return type_; }
-
-	class GlobalConstraint;
-	class LocalConstraint;
 private:
-	EnumeratorConstraint* doInit(SharedContext& ctx, uint32 t, bool start);
-	bool   updateConstraint(Solver& s, bool disjoint);
-	bool   backtrack(Solver& s);
-	bool   updateModel(Solver& s);
-	bool   ignoreSymmetric() const; 
-	void   add(Solver& s, Literal p);
-	Constraint* addNewConstraint(Solver& s);
+	bool backtrack(Solver& s);
+	void updateModel(Solver& s);
+	void doInit(Solver& s);
+	bool ignoreSymmetric() const;
+	void terminateSearch(Solver& s); 
+	void add(Solver& s, Literal p);
+	void removeConstraints(Solver& s);
+	void addNewConstraint(Solver& s);
 	void updateBraveModel(Solver& s);
 	void updateCautiousModel(Solver& s);
-	LitVec            C_;
-	GlobalConstraint* current_;
-	Consequences_t    type_;
+	typedef PodVector<Constraint*>::type  ConstraintDB;
+	ConstraintDB        locked_;
+	LitVec              C_;
+	uint64              numModels_;
+	Constraint*         current_;
+	Consequences_t      type_;
 };
 
 }

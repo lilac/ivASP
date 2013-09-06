@@ -43,7 +43,7 @@ enum RuleType{
 	OPTIMIZERULE    = 6   /**< A minimize statement */
 };
 
-//! Used during rule simplification.
+//! Used during rule simplification
 /**
  * \ingroup problem
  */
@@ -64,7 +64,7 @@ public:
 	//! Clears all flags
 	void clear()              { VarFlags().swap(vf_); }
 	
-	//! Checks whether the head-atom id is superfluous w.r.t the body.
+	//! Checks whether the head-atom id is superfluous w.r.t the body
 	/*!
 	 * A head atom is superfluous if it is needed to satisfy the body (in that case, the
 	 * body can't define the head atom) or, if the rule is a choice rule, if it appears
@@ -80,7 +80,7 @@ public:
 			|| (inBody(posLit(id)) && (sumW - weights(posLit(id)) < bound));
 	}
 
-	//! Checks whether the rule id :- B is selfblocking, i.e. if the body is false, whenever id is true.
+	//! Checks whether the rule id :- B is selfblocking, i.e. if the body is false, whenever id is true
 	/*!
 	 * \pre The body literals of the rule to be checked were marked using addToBody
 	 */
@@ -102,7 +102,7 @@ private:
 	VarFlags vf_;
 };
 
-//! A rule of a logic program.
+//! A rule of a logic program
 /*!
  * \ingroup problem
  * Objects of this class represent one rule of a logic program.
@@ -111,7 +111,7 @@ private:
  */
 class PrgRule {
 public:
-	//! Objects of this type store information about a simplified rule.
+	//! Objects of this type store information about a simplified rule
 	struct RData {
 		uint32   hash;       // hash value of the rule body
 		weight_t sumWeight;  // max achievable weight
@@ -122,10 +122,10 @@ public:
 		: bound_(0)
 		, type_(t) {
 	}
-	//! Resets the rule.
+	//! resets the rule
 	void clear();
 	
-	//! Swaps *this with o.
+	//! swaps *this with o
 	void swap(PrgRule& o) {
 		std::swap(heads, o.heads);
 		std::swap(body, o.body);
@@ -134,7 +134,7 @@ public:
 	}
 
 	// logic
-	//! Sets the type of the rule.
+	//! Sets the type of the rule
 	/*! 
 	 * \pre t != ENDRULE
 	 */
@@ -143,38 +143,38 @@ public:
 		type_ = t;
 		return *this;
 	}
-	//! Returns the rule's type.
+	//! returns the rule's type
 	/*!
-	 * \note If simplification detected the rule to be irrelevant, ENDRULE is returned.
+	 * \note if simplification detected the rule to be irrelevant, ENDRULE is returned
 	 */
 	RuleType type() const { return type_; }
 	
-	//! Sets the lower bound of the rule.
+	//! Sets the lower bound of the rule
 	/*!
 	 * \pre bound >= 0
-	 * \note The bound is ignored if type() is either a basic, choice, or optimize rule.
+	 * \note the bound is ignored if type() is either a basic, choice, or optimize rule
 	 */
 	PrgRule& setBound(weight_t bound) {
 		assert(bound >= 0 && "Precondition violated!\n");
 		bound_ = bound;
 		return *this;
 	}
-	//! Returns the lower bound of the rule.
+	//! returns the lower bound of the rule
 	/*!
-	 * \note For basic and choice rules, the lower bound is equal to the size of the rule's body.
+	 * \note for basic and choice rules, the lower bound is equal to the size of the rule's body.
 	 */
 	weight_t bound() const { return bound_; }
 
-	//! Adds v as a head of this rule.
+	//! Adds v as a head of this rule
 	PrgRule& addHead(Var v);
-	//! Adds v to the positive/negative body of the rule.
+	//! Adds v to the positive/negative body of the rule
 	PrgRule& addToBody(Var v, bool pos, weight_t w=1);
 
-	//! Simplifies the rule and returns information about the simplified rule.
+	//! Simplifies the rule and returns information about the simplified rule
 	RData   simplify(RuleState& r);
 	
-	VarVec        heads;        /**< List of rule heads (note: conjunctive heads!). */
-	WeightLitVec  body;         /**< Body-literals of this rule. */
+	VarVec        heads;        /**< list of rule heads (note: conjunctive heads!) */
+	WeightLitVec  body;         /**< body of this rule */
 private:
 	PrgRule(const PrgRule&);
 	PrgRule& operator=(const PrgRule&);
@@ -203,7 +203,6 @@ public:
 	~PrgRuleTransform();
 	uint32 transform(ProgramBuilder& prg, PrgRule& rule);
 	uint32 transformNoAux(ProgramBuilder& prg, PrgRule& rule);
-	static weight_t prepareRule(PrgRule& rule, weight_t* sumVec);
 private:
 	PrgRuleTransform(const PrgRuleTransform&);
 	PrgRuleTransform& operator=(const PrgRuleTransform&);

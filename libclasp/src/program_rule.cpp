@@ -282,7 +282,20 @@ PrgRuleTransform::Impl::Impl(ProgramBuilder& prg, PrgRule& r)
 	aux_     = new Var[r.bound()];
 	sumW_    = new weight_t[r.body.size()+1];
 	std::memset(aux_ , 0, r.bound()*sizeof(Var));
-	PrgRuleTransform::prepareRule(r, sumW_);
+	
+	if (r.type() == WEIGHTRULE) {
+		std::stable_sort(r.body.begin(), r.body.end(), compose22(
+				std::greater<weight_t>(),
+				select2nd<WeightLiteral>(),
+				select2nd<WeightLiteral>()));
+	}
+	uint32 i      = (uint32)r.body.size();
+	weight_t wSum = 0;
+	sumW_[i]      = 0;
+	while (i-- != 0) {
+		wSum += r.body[i].second;
+		sumW_[i] = wSum;
+	}
 }
 PrgRuleTransform::Impl::~Impl() {
 	delete [] aux_;
@@ -374,28 +387,6 @@ void PrgRuleTransform::Impl::createRule(Var head, Literal* bodyFirst, Literal* b
 	prg_.endRule();
 }
 
-weight_t PrgRuleTransform::prepareRule(PrgRule& r, weight_t* sumVec) {
-	if (r.type() != CONSTRAINTRULE && r.type() != WEIGHTRULE) { return 0; }
-	weight_t sum = 0;
-	if (r.type() == WEIGHTRULE) {
-		std::stable_sort(r.body.begin(), r.body.end(), compose22(
-				std::greater<weight_t>(),
-				select2nd<WeightLiteral>(),
-				select2nd<WeightLiteral>()));
-		for (uint32 i = r.body.size(); i--; ) {
-			sum      += r.body[i].second;
-			sumVec[i] = sum;
-		}
-	}
-	else { // no weights allowed!
-		for (uint32 i = r.body.size(); i--; ) {
-			sum      += (r.body[i].second = 1);
-			sumVec[i] = sum;
-		}
-	}
-	return sum;
-}
-
 // Exponential transformation of cardinality and weight constraint.
 // Creates minimal subsets, no aux atoms.
 // E.g. a rule h = 2 {a,b,c,d} is translated into the following six rules:
@@ -407,8 +398,21 @@ weight_t PrgRuleTransform::prepareRule(PrgRule& r, weight_t* sumVec) {
 // h :- c, d.
 uint32 PrgRuleTransform::transformNoAux(ProgramBuilder& prg, PrgRule& rule) {
 	assert(rule.type() == WEIGHTRULE || rule.type() == CONSTRAINTRULE);
+	if (rule.type() == WEIGHTRULE) {
+		std::stable_sort(rule.body.begin(), rule.body.end(), compose22(
+			std::greater<weight_t>(),
+			select2nd<WeightLiteral>(),
+			select2nd<WeightLiteral>()));
+	}
 	WeightVec sumWeights(rule.body.size() + 1, 0);
-	prepareRule(rule, &sumWeights[0]);
+	LitVec::size_type i = (uint32)rule.body.size();
+	weight_t sum = 0;
+	while (i != 0) {
+		--i;
+		sum += rule.body[i].second;
+		sumWeights[i] = sum;
+	}
+
 	uint32 newRules = 0;
 	VarVec    nextStack;
 	WeightVec weights;

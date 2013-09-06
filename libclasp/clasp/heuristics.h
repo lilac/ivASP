@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2010, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -38,7 +38,7 @@ namespace Clasp {
 
 // Some lookback heuristics to be used together with learning.
 
-//! Computes a moms-like score for var v.
+//! computes a moms-like score for var v
 uint32 momsScore(const Solver& s, Var v);
 
 //! A variant of the BerkMin decision heuristic from the BerkMin Sat-Solver
@@ -80,20 +80,23 @@ uint32 momsScore(const Solver& s, Var v);
 class ClaspBerkmin : public DecisionHeuristic {
 public:
 	/*!
-	 * \param maxBerk Check at most maxBerk candidates when searching for not yet satisfied learnt constraints.
-	 * \note maxBerk = 0 means check *all* candidates.
+	 * \param maxBerk Check at most maxBerk candidates when searching for not yet satisfied learnt constraints
+	 * \param considerLoops true if learnt loop-formulas should be considered during decision making
+	 * \param initMoms use MOMS-like scoring for top-level choices (no conflict information yet)
+	 * \param huangScore use Huang's scoring scheme (see: Jinbo Huang: "A Case for Simple SAT Solvers")
+	 * \note maxBerk = 0 means check *all* candidates
 	 */
-	explicit ClaspBerkmin(uint32 maxBerk = 0);
+	explicit ClaspBerkmin(uint32 maxBerk = 0, bool considerLoops = true, bool initMoms = true, bool huangScore = false);
+	//! initializes the heuristic.
 	void startInit(const Solver& s);
 	void endInit(Solver& s);
+	void reinit(bool b) { order_.reinit = b; }
+	//! updates occurrence-counters if constraint is a learnt constraint.
 	void newConstraint(const Solver& s, const Literal* first, LitVec::size_type size, ConstraintType t);
+	//! updates activity-counters
 	void updateReason(const Solver& s, const LitVec& lits, Literal resolveLit);
-	bool bump(const Solver& s, const WeightLitVec& lits, double adj);
 	void undoUntil(const Solver&, LitVec::size_type);
-	void resurrect(const Solver&, Var v) {
-		if (order_.score.size() <= v) {
-			order_.score.resize(v+1);
-		}
+	void resurrect(const Solver&, Var) {
 		front_ = 1;
 		cache_.clear();
 		cacheFront_ = cache_.end();
@@ -101,7 +104,7 @@ public:
 protected:
 	Literal doSelect(Solver& s);
 private:
-	Literal selectLiteral(Solver& s, Var v, bool vsids) const;
+	Literal selectLiteral(Solver& s, Var v, bool vsids);
 	Literal selectRange(Solver& s, const Literal* first, const Literal* last);
 	bool    initHuang() const { return order_.score[0].occ == 1; }
 	void    initHuang(bool b) { order_.score[0].occ = b; }
@@ -110,6 +113,7 @@ private:
 	Var  getMostActiveFreeVar(const Solver& s);
 	Var  getTopMoms(const Solver& s);
 	bool hasTopUnsat(Solver& s);
+	bool hasTopUnsat(Solver& s, uint32& maxIdx, uint32 minIdx, ConstraintType t);
 	// Gathers heuristic information for one variable v.
 	struct HScore {
 		HScore(uint32 d = 0) :  occ(0), act(0), dec(uint16(d)) {}
@@ -139,7 +143,7 @@ private:
 	typedef VarVec::iterator Pos;
 	
 	struct Order {
-		explicit Order(bool huang_a) : decay(0), huang(huang_a) {}
+		Order(bool huang_a, bool moms_a, bool loops_a) : decay(0), huang(huang_a), moms(moms_a), loops(loops_a), reinit(true) {}
 		struct Compare {
 			explicit Compare(Order* o) : self(o) {}
 			bool operator()(Var v1, Var v2) const {
@@ -152,7 +156,6 @@ private:
 		uint32  decayedScore(Var v) { return score[v].decay(decay, huang); }
 		int32   occ(Var v)   const  { return score[v].occ; }
 		void    inc(Literal p)      { score[p.var()].incAct(decay, huang, p.sign()); }
-		void    inc(Literal p, uint16 f) { if (f) { score[p.var()].decay(decay, huang); score[p.var()].act += f; } }
 		void    incOcc(Literal p)   {
 			if (!huang)score[p.var()].incOcc(p.sign());
 			else       score[p.var()].incAct(decay, true, p.sign());
@@ -163,22 +166,24 @@ private:
 		void    resetDecay();
 		Scores  score;        // For each var v score_[v] stores heuristic score of v
 		uint32  decay;        // "global" decay counter. Increased every decP_ decisions
-		bool    huang;        // Use Huang's scoring scheme (see: Jinbo Huang: "A Case for Simple SAT Solvers")
+		bool    huang;        // Use Huang's scoring scheme
+		bool    moms;         // use MOMS-score for top-level choices
+		bool    loops;        // Consider loop nogoods when searching for learnt nogoods that are not sat
+		bool    reinit;       // reinit score in incremental setting
 	private:
 		Order(const Order&);
 		Order& operator=(const Order&);
 	}       order_; 
 	VarVec  cache_;         // Caches the most active variables
 	LitVec  freeLits_;      // Stores free variables of the last learnt conflict clause that is not sat
-	LitVec  freeOtherLits_; // Stores free variables of the last other learnt nogood that is not sat
+	LitVec  freeLoopLits_;  // Stores free variables of the last learnt loop nogood that is not sat
 	uint32  topConflict_;   // index into the array of learnt nogoods used when searching for conflict clauses that are not sat
-	uint32  topOther_;      // index into the array of learnt nogoods used when searching for other learnt nogoods that are not sat
+	uint32  topLoop_;       // index into the array of learnt nogoods used when searching for loop nogoods that are not sat
 	Var     front_;         // first variable whose truth-value is not already known - reset on backtracking
 	Pos     cacheFront_;    // first unprocessed cache position - reset on backtracking
 	uint32  cacheSize_;     // cache at most cacheSize_ variables
 	uint32  numVsids_;      // number of consecutive vsids-based decisions
 	uint32  maxBerkmin_;    // when searching for an open learnt constraint, check at most maxBerkmin_ candidates.
-	RNG     rng_;
 };
 
 //! Variable Move To Front decision strategies inspired by Siege.
@@ -194,20 +199,26 @@ private:
 class ClaspVmtf : public DecisionHeuristic {
 public:
 	/*!
-	 * \param mtf The number of literals from constraints used during conflict resolution that are moved to the front.
+	 * \param mtf The number of literals from constraints used during conflict resolution that are moved to the front
+	 * \param considerLoops true if literals from learnt loop-formulas should be moved, too.
 	 */
-	explicit ClaspVmtf(LitVec::size_type mtf = 8);
+	explicit ClaspVmtf(LitVec::size_type mtf = 8, bool considerLoops = false);
+	//! initializes the heuristic.
 	void startInit(const Solver& s);
 	void endInit(Solver&);
+	void reinit(bool b) { reinit_ = b; }
+	/*!
+	 * updates occurrence-counters if constraint is not a native constraint. Moves active
+	 * vars to the front of the variable list the constraint is a conflict-clause
+	 * or a loop-formula and consider loops was set to true.
+	 */
 	void newConstraint(const Solver& s, const Literal* first, LitVec::size_type size, ConstraintType t);
+	//! updates activity-counters
 	void updateReason(const Solver& s, const LitVec& lits, Literal resolveLit);
-	bool bump(const Solver& s, const WeightLitVec& lits, double adj);
+	//! removes vars set were assigned on level 0 from the heuristic's var list
 	void simplify(const Solver&, LitVec::size_type);
 	void undoUntil(const Solver&, LitVec::size_type);
 	void resurrect(const Solver&, Var v) {
-		if (score_.size() <= v) {
-			score_.resize(v+1, VarInfo(vars_.end()));
-		}
 		if (score_[v].pos_ == vars_.end()) { score_[v].pos_ = vars_.insert(vars_.end(), v); }
 		else { front_ = vars_.begin(); }
 	}
@@ -215,6 +226,7 @@ protected:
 	Literal doSelect(Solver& s);
 private:
 	Literal selectRange(Solver& s, const Literal* first, const Literal* last);
+	Literal getLiteral(const Solver& s, Var v) const;
 	typedef std::list<Var> VarList;
 	typedef VarList::iterator VarPos;
 	struct VarInfo {
@@ -246,6 +258,7 @@ private:
 		LessLevel& operator=(const LessLevel&);
 		const Solver& s_;
 		const Score&  sc_;
+		
 	};
 	Score       score_;     // For each var v score_[v] stores heuristic score of v
 	VarList     vars_;      // List of possible choices, initially ordered by MOMs-like score
@@ -253,6 +266,8 @@ private:
 	VarPos      front_;     // Current front-position in var list - reset on backtracking 
 	uint32      decay_;     // "global" decay counter. Increased every 512 decisions
 	const LitVec::size_type MOVE_TO_FRONT;
+	bool        loops_;     // Move MOVE_TO_FRONT/2 vars from loop nogoods to the front of vars 
+	bool        reinit_;
 };
 
 //! A variable state independent decision heuristic favoring variables that were active in recent conflicts.
@@ -281,35 +296,34 @@ private:
 class ClaspVsids : public DecisionHeuristic {
 public:
 	/*!
-	 * \param d Set initial inc-factor to 1.0/d.
+	 * \param considerLoops If true, activity counters are increased for variables that occure in loop-formulas
 	 */
-	explicit ClaspVsids(double d = 0.95);
+	explicit ClaspVsids(bool considerLoops = false);
 	void startInit(const Solver& s);
 	void endInit(Solver&);
+	void reinit(bool b) { reinit_ = b; }
 	void newConstraint(const Solver& s, const Literal* first, LitVec::size_type size, ConstraintType t);
 	void updateReason(const Solver& s, const LitVec& lits, Literal resolveLit);
-	bool bump(const Solver& s, const WeightLitVec& lits, double adj);
 	void undoUntil(const Solver&, LitVec::size_type);
 	void simplify(const Solver&, LitVec::size_type);
 	void resurrect(const Solver&, Var v) {
-		if (v >= score_.size()) {
-			score_.resize(v+1);
-		}
 		vars_.update(v);  
 	}
 protected:
 	Literal doSelect(Solver& s);
 private:
 	Literal selectRange(Solver& s, const Literal* first, const Literal* last);
-	void updateVarActivity(Var v, double f = 1.0) {
-		if ( (score_[v].first += (inc_*f)) > 1e100 ) {
-			normalize();
+	void updateVarActivity(Var v) {
+		if ( (score_[v].first += inc_) > 1e100 ) {
+			for (LitVec::size_type i = 0; i != score_.size(); ++i) {
+				score_[i].first *= 1e-100;
+			}
+			inc_ *= 1e-100;
 		}
 		if (vars_.is_in_queue(v)) {
 			vars_.increase(v);
 		}
 	}
-	void normalize();
 	// HScore.first: activity of a variable
 	// HScore.second: occurrence counter for a variable's literal
 	//  > 0: positive literal occurred more often
@@ -327,10 +341,11 @@ private:
 		const Scores& sc_;
 	};
 	typedef bk_lib::indexed_priority_queue<GreaterActivity> VarOrder;
-	Scores       score_;
-	VarOrder     vars_;
-	const double decay_;
-	double       inc_;
+	Scores    score_;
+	VarOrder  vars_;
+	double    inc_;
+	bool      scoreLoops_;
+	bool      reinit_;
 };
 
 }

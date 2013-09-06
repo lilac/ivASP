@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2010, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -26,15 +26,16 @@
 #endif
 #include <clasp/solver.h>
 #include <clasp/literal.h> 
-#include <clasp/dependency_graph.h>
+#include <clasp/program_builder.h>
 #include <clasp/constraint.h>
+#include <deque>
 namespace Clasp {
 class LoopFormula;
 
 
 //! Clasp's default unfounded set checker.
 /*!
- * \ingroup constraint
+ * \ingroup solver
  * Searches for unfounded atoms by checking the positive dependency graph (PDG)
  * Basic Idea:
  *  - For each (non-false) atom a, let source(a) be a body B in body(a) that provides an external support for a
@@ -48,9 +49,7 @@ class LoopFormula;
  */
 class DefaultUnfoundedCheck : public PostPropagator {
 public:
-	typedef SharedDependencyGraph DependencyGraph;
-	typedef DependencyGraph::NodeId NodeId;
-	//! Defines the supported reasons for explaining assignments.
+	//! Defines the supported reasons for explaining assignments
 	enum ReasonStrategy {
 		common_reason,    /*!< one reason for each unfounded set but one clause for each atom */
 		distinct_reason,  /*!< distinct reason and clause for each unfounded atom */
@@ -58,227 +57,265 @@ public:
 		only_reason,      /*!< store only the reason but don't learn a nogood */
 	};
 	
-	DefaultUnfoundedCheck();
+	DefaultUnfoundedCheck(ReasonStrategy r = common_reason);
 	~DefaultUnfoundedCheck();
 
-	ReasonStrategy reasonStrategy() const { return strategy_; }
-
-	//! Adds the unfounded set checker as a post propagator to the given solver.
-	/*!
-	 * Once the unfounded set checker is attached, it is owned by
-	 * the solver. 
-	 * \note Shall be called at most once!
-	 */
-	void   attachTo(Solver& s, DependencyGraph* graph);
+	ReasonStrategy reasonStrategy() const {
+		return strategy_;
+	}
+	void clear();
 	
-	DependencyGraph* graph() const { return graph_; }
-	uint32           nodes() const { return static_cast<uint32>(atoms_.size() + bodies_.size()); }
+	//! must be called once before endInit() is called to add strongly connected atoms
+	void startInit(Solver& s);
+	
+	//! initialize all SCCs
+	/*!
+	 * \param sccAtoms  Atoms of the logic program that are strongly connected.
+	                    Must be a subset of prgAtoms; preferably ordered by SCC
+	 * \param prgAtoms  All atoms of the logic program
+	 * \param prgBodies All bodies of the logic program
+	 */
+	bool endInit(const AtomList& sccAtoms, const AtomList& prgAtoms, const BodyList& prgBodies);
 
+	//! number of nodes in the positive dependency graph
+	LitVec::size_type nodes() const { return atoms_.size() + bodies_.size(); }
+	
+	const Solver& solver() const { return *solver_; }
+	
 	// base interface
-	bool   init(Solver&);
 	void   reset();
 	bool   propagateFixpoint(Solver& s);
 	bool   propagate(Solver& s) { return DefaultUnfoundedCheck::propagateFixpoint(s); }
 	uint32 priority() const     { return uint32(priority_single_high); }
-private:
-	DefaultUnfoundedCheck(const DefaultUnfoundedCheck&);
-	DefaultUnfoundedCheck& operator=(const DefaultUnfoundedCheck&);
-	typedef DependencyGraph::NodePair<DependencyGraph::BodyNode> BodyNodeP;
-	typedef DependencyGraph::NodePair<DependencyGraph::AtomNode> AtomNodeP;
-	// data for each body
-	struct BodyData {
-		BodyData() : watches(0), picked(0) {}
-		uint32 watches : 31; // how many atoms watch this body as source?
-		uint32 picked  :  1; // flag used in computeReason()
-		uint32 lower_or_ext; // unsourced preds or index of extended body
+	
+	// public - so that tests can access the data-structures
+	struct UfsNode;
+	struct UfsAtomNode;
+	class  UfsBodyNode;
+	typedef PodVector<UfsNode*>::type NodeVec;
+	typedef PodVector<UfsAtomNode*>::type AtomVec;
+	typedef PodVector<UfsBodyNode*>::type BodyVec;
+	
+	//! Base class for nodes in the PDG.
+	struct UfsNode {
+		UfsNode(Literal a_lit, uint32 a_scc) 
+			: lit(a_lit), scc(a_scc)
+			, pickedOrTodo(0), typeOrUnfounded(0) { }
+		Literal lit;                  /*!< literal in the solver */
+		uint32  scc             : 30; /*!< component number */
+		uint32  pickedOrTodo    : 1;  /*!< in picked (body) resp. todo (atom) queue */
+		uint32  typeOrUnfounded : 1;  /*!< in unfounded (atom) queue resp. type of body (normal/extended) */
 	};
-	// data for extended bodies
-	struct ExtData {
-		ExtData(weight_t bound, uint32 preds) : lower(bound) {
-			for (uint32 i = 0; i != flagSize(preds); ++i) { flags[i] = 0; }
+	
+	//! An atom in the PDG
+	struct UfsAtomNode : public UfsNode {
+		UfsAtomNode(Literal a_lit, uint32 a_scc) : UfsNode(a_lit, a_scc), preds(0), succs(0), source_(1) {}
+		~UfsAtomNode() {
+			delete [] preds;
+			delete [] succs;
 		}
-		bool addToWs(uint32 idx, weight_t w) {
-			const uint32 fIdx = (idx / 32);
-			const uint32 m    = (1u << (idx & 31));
-			assert((flags[fIdx] & m) == 0);
-			flags[fIdx]      |= m;
-			return (lower -= w) <= 0;
+		//! returns the body that is currently watched as possible source
+		/*!
+		 * \note The returned body is only valid source if hasSource() returns true.
+		 */
+		UfsBodyNode*  watch()     const { return (UfsBodyNode*)clear_bit(source_, 0); }
+		//! returns true if atom has currently a source, i.e. a body that can still define it
+		bool          hasSource() const { return !test_bit(source_, 0); }  
+		//! sets b as source for this atom
+		void          updateSource(UfsBodyNode* b)  {
+			assert(b);
+			++b->watches;
+			if (source_ != 1) --watch()->watches;
+			source_ = (uintp)b;
 		}
-		bool inWs(uint32 idx) const {
-			const uint32 fIdx = (idx / 32);
-			const uint32 m    = (1u << (idx & 31));
-			return (flags[fIdx] & m) != 0;
-		}
-		void removeFromWs(uint32 idx, weight_t w) {
-			if (inWs(idx)) {
-				lower += w;
-				flags[(idx / 32)] &= ~(uint32(1) << (idx & 31));
-			}
-		}
-		static   uint32 flagSize(uint32 preds) { return (preds+31)/32; }
-		weight_t lower;
-		uint32   flags[0];
+		void          markSourceInvalid() { store_set_bit(source_, 0); }
+		void          resurrectSource()   { store_clear_bit(source_, 0); }
+		UfsBodyNode** preds;  /*!< predecessors: [other scc, same scc] */
+		UfsBodyNode** succs;  /*!< successors from same scc */
+		//! returns true if atom is currently in todo-Queue
+		bool inTodoQueue()      const { return pickedOrTodo != 0; }
+		//! returns true if atom is currently in unfounded-Queue
+		bool inUnfoundedQueue() const { return typeOrUnfounded != 0; }
+	private:
+		uintp source_;  // current source, LSB: 0: valid, 1: invalid
 	};
-	// data for each atom
-	struct AtomData {
-		AtomData() : source(nill_source), todo(0), ufs(0), validS(0) {}
-		// returns the body that is currently watched as possible source
-		NodeId watch()     const { return source; }
-		// returns true if atom has currently a source, i.e. a body that can still define it
-		bool   hasSource() const { return validS; }
-		// mark source as invalid but keep the watch
-		void   markSourceInvalid() { validS = 0; }
-		// restore validity of source
-		void   resurrectSource()   { validS = 1; }
-		// sets b as source for this atom
-		void   setSource(NodeId b) {
-			source = b;
-			validS = 1;
+	//! A body in the PDG
+	class UfsBodyNode : public UfsNode {
+		friend class DefaultUnfoundedCheck;
+	public:
+		UfsBodyNode(Literal a_lit, uint32 a_scc) : UfsNode(a_lit, a_scc), preds(0), succs(0), watches(0) { }
+		virtual ~UfsBodyNode() { delete [] preds; delete [] succs; }
+		
+		UfsAtomNode** preds;    /*!< predecessors from same scc                             */
+		UfsAtomNode** succs;    /*!< successors: [same scc, other scc]                      */
+		uint32        watches;  /*!< number of atoms watching this body as potential source */
+		//! returns true if body was already visited during one algorithm
+		bool picked()   const { return pickedOrTodo != 0; }
+
+		// Initializes the body node from the given program node
+		/*!
+		 * Shall return true only if body is (currently) external to all non-trivial sccs.
+		 * \param prgBody   The program body corresponding to this UfsBody
+		 * \param prgAtoms  The list of all atoms
+		 * \param ufs       The unfounded set checker in which this body is used
+		 * \param initList  The atom list that is currently initialized; either preds or succs
+		 * \param listLen   The number of atoms in initList
+		 */
+		virtual bool init(const PrgBodyNode& prgBody, const AtomList& prgAtoms, DefaultUnfoundedCheck& ufs, UfsAtomNode** initList, uint32 listLen) = 0;
+		
+		//! Checks whether the body can source its heads
+		/*!
+		 * \return  true if the body currently can source its heads
+		 */
+		virtual bool isValidSource(const DefaultUnfoundedCheck& ufs)  = 0;
+
+		//! Notifies the body about the fact that its subgoal a has a new source
+		/*!
+		 * \pre     a in B+ and scc(a) == scc(*this)
+		 * \return  true if the body now can source its heads 
+		 */
+		virtual bool atomSourced(const UfsAtomNode& a) = 0;
+	
+		//! Notifies the body about the fact that its subgoal a has lost its source
+		/*!
+		 * \pre     a in B+ and scc(a) == scc(*this)
+		 * \return  true if the body no longer can source its heads
+		 */
+		virtual bool atomUnsourced(const UfsAtomNode& a) = 0;
+
+		//! Shall enqueue all predecessors of this body that currently lack a source
+		virtual void enqueueUnsourced(DefaultUnfoundedCheck& ufs) = 0;
+		
+		/*!
+		 * If this body is part of the reason for the current unfounded set stored in ufs
+		 * shall call ufs->addReasonLit(l) for each false literal l that prevents the body
+		 * from beeing a valid source.
+		 * \pre     ufs currently stores an unfounded set
+		 */
+		void addIfReason(DefaultUnfoundedCheck& ufs, uint32 uScc) {
+			if      (uScc == scc)               { doAddIfReason(ufs); }
+			else if (ufs.solver().isFalse(lit)) { ufs.addReasonLit(lit, this); }
 		}
-		static const uint32 nill_source = (uint32(1) << 29)-1;
-		uint32 source : 29; // id of body currently watched as source
-		uint32 todo   :  1; // in todo-queue?
-		uint32 ufs    :  1; // in ufs-queue?
-		uint32 validS :  1; // is source valid?
+
+		//! Call-back function for watches
+		virtual void onWatch(DefaultUnfoundedCheck& /*ufs*/, Literal /*p*/, uint32 /*data*/) {}
+	private:    
+		virtual void doAddIfReason(DefaultUnfoundedCheck& ufs)              = 0;
 	};
-	// Watch-structure used to update extended rules affected by literal assignments
-	struct ExtWatch {
-		enum Type { watch_choice_false = 0, watch_body_goal_false = 1 };
-		NodeId bodyId;
-		uint32 data;
-	};
-	struct IdQueue {
-		IdQueue() : front_(0) {}
-		void push_back(NodeId id) { vec_.push_back(id); }
-		void pop_front()          { ++front_; }
-		void pop_back()           { vec_.pop_back(); }
-		void clear()              { front_ = 0; vec_.clear(); }
-		bool empty() const        { return front_ >= vec_.size(); }
-		NodeId front() const      { return vec_[front_]; }
-		VarVec::size_type front_;
-		VarVec vec_;
-	};
-	// -------------------------------------------------------------------------------------------  
-	// constraint interface
-	PropResult propagate(Solver& s, Literal p, uint32&);
-	void reason(Solver& s, Literal, LitVec&);
-	// -------------------------------------------------------------------------------------------
-	// initialization
-	void   initBody(const BodyNodeP& n);
-	void   initExtBody(const BodyNodeP& n);
-	void   initSuccessors(const BodyNodeP& n, weight_t lower);
-	void   addExtWatch(Literal p, const BodyNodeP& n, uint32 data);
-	void   addExtWatch(Literal p, uint32 data);
-	struct InitExtWatches {
-		void operator()(Literal p, const BodyNodeP& B, uint32 idx, bool ext) const { 
-			self->addExtWatch(~p, B, (idx<<1)+ext); 
-			if (ext && !self->solver_->isFalse(p)) {
-				extra->addToWs(idx, B.node->pred_weight(idx, true));
-			}
+			
+	//! inefficient - only used for testing
+	UfsBodyNode* bodyNode(Literal b) const {
+		for (BodyVec::size_type i = 0; i < bodies_.size(); ++i) {
+			if (bodies_[i]->lit == b) { return bodies_[i]; }
 		}
-		DefaultUnfoundedCheck* self;
-		ExtData*               extra;
-	};
-	// -------------------------------------------------------------------------------------------  
-	// propagating source pointers
-	void propagateSource(bool forceTodo=false);
-	struct AddSource { // an atom in a body has a new source, check if body is now a valid source
-		explicit AddSource(DefaultUnfoundedCheck* u) : self(u) {}
-		// normal body
-		void operator()(const BodyNodeP& n, NodeId) const {
-			if (--self->bodies_[n.id].lower_or_ext == 0 && !self->solver_->isFalse(n.node->lit)) { self->forwardSource(n); }
+		return 0;
+	}
+	//! inefficient - only used for testing
+	UfsAtomNode* atomNode(Literal h) const {
+		for (AtomVec::size_type i = 0; i < atoms_.size(); ++i) {
+			if (atoms_[i]->lit == h) { return atoms_[i]; }
 		}
-		// extended body
-		void operator()(const BodyNodeP& n, NodeId atomId, uint32 idx) const;
-		DefaultUnfoundedCheck* self;
-	};
-	struct RemoveSource {// an atom in a body has lost its source, check if body is no longer a valid source 
-		explicit RemoveSource(DefaultUnfoundedCheck* u, bool add) : self(u), addTodo(add) {}
-		// normal body
-		void operator()(const BodyNodeP& n, NodeId) const { 
-			if (++self->bodies_[n.id].lower_or_ext == 1 && self->bodies_[n.id].watches != 0) { 
-				self->forwardUnsource(n, addTodo); 
-			}
+		return 0;
+	}
+	// helpers
+	// The body b can no longer be used as source pointer.
+	// Mark it for later source pointer removal
+	void enqueueInvalid(UfsBodyNode* b) {
+		invalid_.push_back(b);
+	}
+
+	// Mark atom a for later source pointer removal
+	// Pre: a->hasSource() == true
+	void enqueuePropagateUnsourced(UfsAtomNode* a) {
+		assert(a->hasSource() == true);
+		a->markSourceInvalid();
+		sourceQueue_.push_back(a);
+	}
+	// Add atom a to the list of atoms for which a source pointer is needed
+	// Pre: a->hasSource() == false
+	void enqueueFindSource(UfsAtomNode* a) {
+		if (a->typeOrUnfounded == 0 && !solver_->isFalse(a->lit)) {
+			unfounded_.push_back(a);
+			a->typeOrUnfounded = 1;
 		}
-		// extended body
-		void operator()(const BodyNodeP& n, NodeId atomId, uint32 idx) const;
-		DefaultUnfoundedCheck* self;
-		bool                   addTodo;
+	}
+	void addWatch(Literal p, UfsBodyNode* b, uint32 data);
+	void addReasonLit(Literal p, const UfsBodyNode* reason);
+private:  
+	// A watch-structure used to notify extended bodies affected by literal assignments
+	struct Watch {
+		Watch(UfsBodyNode* b, uint32 data)
+			: body_(b), data_(data) {}
+		void setData(uint32 d) { data_ = d; }
+		void notify(Literal p, DefaultUnfoundedCheck* ufs) const {
+			body_->onWatch(*ufs, p, data_);
+		}
+	private:
+		UfsBodyNode*  body_;
+		uint32        data_;
 	};
-	void setSource(const AtomNodeP& n, const BodyNodeP& b);
-	void removeSource(NodeId bodyId);
-	void forwardSource(const BodyNodeP& n);
-	void forwardUnsource(const BodyNodeP& n, bool add);
-	void updateSource(AtomData& atom, const BodyNodeP& n);
-	// -------------------------------------------------------------------------------------------  
-	// finding & propagating unfounded sets
+	typedef std::deque<UfsAtomNode*>  Queue;
+	typedef PodVector<Watch>::type    Watches;
+// -------------------------------------------------------------------------------------------  
+// constraint interface
+	PropResult     propagate(const Literal& p, uint32&, Solver& s);
+	ConstraintType reason(const Literal&, LitVec&);
+// -------------------------------------------------------------------------------------------
+// Graph initialization
+	bool relevantPrgAtom(PrgAtomNode* a) const { return a->hasVar() && a->scc() != PrgNode::noScc && !solver_->isFalse(a->literal()); }
+	bool relevantPrgBody(PrgBodyNode* b) const { return b->hasVar() && !solver_->isFalse(b->literal()); }
+	UfsAtomNode*  getAtom(PrgAtomNode* a);
+	UfsBodyNode*  addBody(PrgBodyNode*, const AtomList& progAtoms);
+	void initAtom(UfsAtomNode& an, const PrgAtomNode& a, const AtomList& prgAtoms, const BodyList& prgBodies);            
+// -------------------------------------------------------------------------------------------  
+// Finding unfounded sets
 	bool findUnfoundedSet();
-	bool findSource(NodeId atom);
-	bool isValidSource(const BodyNodeP&);
-	void addUnsourced(const BodyNodeP&);
+	bool findSource(UfsAtomNode* head);
+	void setSource(UfsBodyNode* body, UfsAtomNode* head);
+	void removeSource(UfsBodyNode* body);
+	void propagateSource(bool forceTodo=false);
+// -------------------------------------------------------------------------------------------  
+// Propagating unfounded sets
 	bool assertAtom();
 	bool assertSet(); 
 	bool assertAtom(Literal a);
 	void computeReason();
-	void addIfReason(const BodyNodeP&, uint32 uScc);
-	void addReasonLit(Literal);
-	struct AddReasonLit {
-		void operator()(Literal p, const BodyNodeP&, NodeId, bool) const { if (self->solver_->isFalse(p)) self->addReasonLit(p); }
-		DefaultUnfoundedCheck* self;
-	};
 	void createLoopFormula();
-	// -------------------------------------------------------------------------------------------  
-	// some helpers
-	void enqueueTodo(NodeId atomId) {
-		if (atoms_[atomId].todo == 0) {
-			atoms_[atomId].todo = 1;
-			todo_.push_back(atomId);
+// -------------------------------------------------------------------------------------------  
+// more helpers
+	void enqueueTodo(UfsAtomNode* head) {
+		if (head->pickedOrTodo == 0) {
+			todo_.push_back(head);
+			head->pickedOrTodo = 1;
 		}
 	}
-	NodeId dequeueTodo() {
-		NodeId id = todo_.front();
+	UfsAtomNode* dequeueTodo() {
+		UfsAtomNode* head = todo_.front();
 		todo_.pop_front();
-		atoms_[id].todo = 0;
-		return id;
+		head->pickedOrTodo = 0;
+		return head;
 	}
-	// Add atom a to the list of atoms for which a source pointer is needed
-	// Pre: a->hasSource() == false
-	void enqueueUnfounded(NodeId atomId) {
-		if (atoms_[atomId].ufs == 0) {
-			unfounded_.push_back(atomId);
-			atoms_[atomId].ufs = 1;
-		}
-	}
-	NodeId dequeueUnfounded() {
-		NodeId id = unfounded_.front();
+	UfsAtomNode* dequeueUnfounded() {
+		UfsAtomNode* head = unfounded_.front();
 		unfounded_.pop_front();
-		atoms_[id].ufs = 0;
-		return id;
+		head->typeOrUnfounded = 0;
+		return head;
 	} 
-	// -------------------------------------------------------------------------------------------  
-	typedef PodVector<AtomData>::type AtomVec;
-	typedef PodVector<BodyData>::type BodyVec;
-	typedef PodVector<ExtData*>::type ExtVec;
-	typedef PodVector<ExtWatch>::type WatchVec;
-	// -------------------------------------------------------------------------------------------  
-	IdQueue          todo_;        // ids of atoms that recently lost their source
-	IdQueue          unfounded_;   // ids of atoms that are unfounded wrt the current assignment (limited to one scc)
-	AtomVec          atoms_;       // data for each atom       
-	BodyVec          bodies_;      // data for each body
-	ExtVec           extended_;    // data for each extended body
-	WatchVec         watches_;     // watches for handling choice-, cardinality- and weight rules
-	VarVec           sourceQ_;     // source-pointer propagation queue
-	VarVec           invalid_;     // ids of bodies that became invalid during unit propagation - they can no longer be sources
-	VarVec           invalidExt_;  // ids of extended watches that fired during unit propagation
-	VarVec           reasonExt_;   // temporary vector for handling extended rules in computeReason()
-	LitVec           loopAtoms_;   // only used if strategy_ == shared_reason
-	Solver*          solver_;      // my solver
-	DependencyGraph* graph_;       // PBADG
-	LitVec*          reasons_;     // only used if strategy_ == only_reason. reasons_[v] reason why v is unfounded
-	LitVec           activeClause_;// activeClause_[0] is the current unfounded atom
-	ClauseInfo       info_;        // info on active clause
-	ReasonStrategy   strategy_;    // what kind of reasons to compute?
+// -------------------------------------------------------------------------------------------  
+	AtomVec         atoms_;       // Atoms of the positive dependency graph
+	BodyVec         bodies_;      // Bodies of the positive dependency graph
+	BodyVec         invalid_;     // These bodies became invalid during unit propagation - they can no longer be source
+	Watches         watches_;     // Watches for handling choice-/cardinality- and weight rules
+	AtomVec         sourceQueue_; // Used during source-pointer propagation
+	Queue           todo_;        // Atom that recently lost their source
+	Queue           unfounded_;   // Atoms that are unfounded wrt the current assignment (limited to one scc)
+	BodyVec         picked_;      // Bodies seen during reason computation
+	LitVec          pickedAtoms_; // Literals in a reason from non-false extended bodies
+	LitVec          loopAtoms_;   // only used if strategy_ == shared_reason
+	Solver*         solver_;      // my solver
+	LitVec*         reasons_;     // only used if strategy_ == only_reason. reasons_[v] reason why v is unfounded
+	ClauseCreator*  activeClause_;// activeClause_[0] is the current unfounded atom
+	ReasonStrategy  strategy_;    // what kind of reasons to compute?
 };
-
 }
 #endif

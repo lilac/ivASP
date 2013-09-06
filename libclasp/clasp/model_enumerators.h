@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2011, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -24,33 +24,29 @@
 #pragma once
 #endif
 
-#include <clasp/enumerator.h>
+#include <clasp/solve_algorithms.h>
 #include <clasp/clause.h>
 
 namespace Clasp { 
 
 //! Common base class for model enumeration with minimization and projection
-/*!
- * \ingroup enumerator
- */
 class ModelEnumerator : public Enumerator {
 public:
 	/*! 
-	 * \param p The printer to use for outputting results.
+	 * \param p the printer to use for outputting results.
 	 */
 	explicit ModelEnumerator(Enumerator::Report* p = 0);
 	~ModelEnumerator();
-	//! Enables/disbales projective solution enumeration.
+	//! enables/disbales projective solution enumeration
 	/*!
-	 * \note Must be called before Enumerator::init() is called.
+	 * \note must be called before Enumerator::init() is called
 	 */
 	void     setEnableProjection(bool b);
 protected:
 	bool backtrack(Solver& s);
 	bool ignoreSymmetric() const;
 	bool projectionEnabled() const { return project_ != 0; }
-	void initContext(SharedContext& ctx);
-	void addProjectVar(SharedContext& ctx, Var v);
+	void doInit(Solver& s);
 	virtual bool   doBacktrack(Solver& s, uint32 bl) = 0;
 	virtual uint32 getProjectLevel(Solver& s) = 0;
 	uint32         numProjectionVars() const { assert(projectionEnabled()); return (uint32)project_->size(); }
@@ -59,10 +55,9 @@ private:
 	VarVec* project_;
 };
 
+
 //! Backtrack based model enumeration
 /*!
- * \ingroup enumerator
- *
  * This class enumerates models by maintaining a special backtracking level 
  * and by suppressing certain backjumps. 
  * For normal model enumeration and minimization no extra nogoods are created.
@@ -79,37 +74,27 @@ public:
 	 *         - bit 2: minimize backjumps when backtracking from a solution
 	 */
 	BacktrackEnumerator(uint32 projectOpts, Enumerator::Report* p = 0);
-	bool supportsRestarts() const { return optimize(); }
-	bool supportsParallel() const { return !projectionEnabled(); }
+	~BacktrackEnumerator();
 private:
+	typedef std::pair<Constraint*, uint32>  NogoodPair;
+	typedef PodVector<NogoodPair>::type     Nogoods;
 	enum ProjectOptions {
 		ENABLE_HEURISTIC_SELECT = 1,
 		ENABLE_PROGRESS_SAVING  = 2,
 		MINIMIZE_BACKJUMPING    = 4
 	};
-	struct LocalConstraint : EnumeratorConstraint {
-		typedef std::pair<Constraint*, uint32> NogoodPair;
-		typedef PodVector<NogoodPair>::type Nogoods;
-		void        destroy(Solver* s, bool detach);
-		void        add(Solver& s, LearntConstraint* c);
-		void        undoLevel(Solver& s);
-		Constraint* cloneAttach(Solver& other);
-		Nogoods nogoods;
-	};
-	EnumeratorConstraint* doInit(SharedContext& ctx, uint32 t, bool start);
-	bool    updateModel(Solver& s);
-	bool    updateConstraint(Solver& s, bool disjoint);
-	bool    doBacktrack(Solver& s, uint32 bl);
-	uint32  getProjectLevel(Solver& s);
+	void   terminateSearch(Solver& s);
+	bool   doBacktrack(Solver& s, uint32 bl);
+	uint32 getProjectLevel(Solver& s);
+	void    undoLevel(Solver& s);
 	uint32  getHighestBacktrackLevel(const Solver& s, uint32 bl) const;
 	LitVec  projAssign_;
+	Nogoods nogoods_;
 	uint8   projectOpts_;
 };
 
 //! Recording based model enumeration
 /*!
- * \ingroup enumerator
- * 
  * This class enumerates models by recording nogoods for found solutions.
  * For normal model enumeration and projection (with or without minimization) the
  * number of nogoods is bounded by the number of solutions.
@@ -127,18 +112,16 @@ public:
 	RecordEnumerator(Enumerator::Report* p = 0);
 	~RecordEnumerator();
 private:
-	class   SolutionQueue;
-	class   LocalConstraint;
-	typedef SharedLiterals SL;
-	EnumeratorConstraint* doInit(SharedContext& ctx, uint32 t, bool start);
-	bool   updateModel(Solver&);
-	bool   updateConstraint(Solver& s, bool disjoint);
+	typedef PodVector<Constraint*>::type ConstraintDB;
+	void   terminateSearch(Solver& s);
 	bool   doBacktrack(Solver& s, uint32 bl);
 	uint32 getProjectLevel(Solver& s);
-	void   createSolutionNogood(Solver& s);
+	void   addSolution(Solver& s);
 	uint32 assertionLevel(const Solver& s);
-	ClauseCreator  solution_;
-	SolutionQueue* queue_;
+	bool   simplify(Solver& s, bool);
+	ClauseCreator       solution_;
+	ConstraintDB        nogoods_;
 };
+
 }
 #endif

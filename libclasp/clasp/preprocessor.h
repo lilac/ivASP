@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2010, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -30,14 +30,13 @@ namespace Clasp {
 class ProgramBuilder;
 class PrgBodyNode;
 class PrgAtomNode;
-struct HeadEdge;
 
 /**
  * \ingroup problem Problem specification
  */
 //@{
 
-//! Preprocesses (i.e. simplifies) a logic program.
+//! Preprocesses (i.e. simplifies) a logic program
 /*!
  * Preprocesses (i.e. simplifies) a logic program and associates variables with
  * the nodes of the simplified logic program.
@@ -45,7 +44,7 @@ struct HeadEdge;
 class Preprocessor {
 public:
 	Preprocessor() : prg_(0), dfs_(true), backprop_(false) {}
-	//! Possible eq-preprocessing types.
+	//! Possible eq-preprocessing types
 	enum EqType {
 		no_eq,    /*!< no eq-preprocessing, associate a new var with each supported atom and body */
 		body_eq,  /*!< associate vars to atoms, then check which bodies are equivalent to atoms   */
@@ -54,14 +53,14 @@ public:
 
 	void enableBackprop(bool b) { backprop_ = b; }
 
-	//! Starts preprocessing of the logic program.
+	//! starts preprocessing of the logic program
 	/*!
 	 * Computes the maximum consequences of prg and associates a variable 
 	 * with each supported atom and body.
-	 * \param prg The logic program to preprocess.
-	 * \param t   Type of eq-preprocessing.
-	 * \param maxIters If t == full_eq, maximal number of iterations during eq preprocessing.
-	 * \param dfs If t == full_eq, classify in df-order (true) or bf-order (false).
+	 * \param prg The logic program to preprocess
+	 * \param t   Type of eq-preprocessing
+	 * \param maxIters If t == full_eq, maximal number of iterations during eq preprocessing
+	 * \param dfs If t == full_eq, classify in df-order (true) or bf-order (false)
 	 */
 	bool preprocess(ProgramBuilder& prg, EqType t, uint32 maxIters, bool dfs = true) {
 		prg_  = &prg;
@@ -73,14 +72,14 @@ public:
 			: preprocessSimple(t == body_eq);
 	}
 	
-	//! Marks the atom with the id atomId for simplification.
+	//! Marks the atom with the id atomId for simplification
 	/*!
 	 * \pre preprocess() was called with strong set to true
 	 */
 	void    setSimplifyBodies(uint32 atomId) {
 		if (atomId < nodes_.size()) nodes_[atomId].asBody = 1;
 	}
-	//! Marks the body with the id bodyId for head-simplification.
+	//! Marks the body with the id bodyId for head-simplification
 	/*!
 	 * \pre preprocess() was called with strong set to true
 	 */
@@ -120,7 +119,7 @@ private:
 		return follow_[idx++];;
 	}
 	uint32  addBodyVar(Var bodyId, PrgBodyNode*);
-	uint32  addAtomVar(HeadEdge it, PrgAtomNode*, PrgBodyNode* body);
+	uint32  addAtomVar(Var atomId, PrgAtomNode*, PrgBodyNode* body);
 	uint32  propagateAtomVar(Var atomId, PrgAtomNode*);
 	void    setSimplifyBody(uint32 bodyId)    { nodes_[bodyId].sBody = 1; }
 	Var     getRootAtom(Literal p) const {
@@ -140,8 +139,8 @@ private:
 		if (p.index() >= litToNode_.size()) litToNode_.resize(p.index()+1, (varMax<<1));
 		store_set_bit(litToNode_[p.index()], 0);
 	}
-	bool     allowMerge(Var bodyId, Var rootId);
-	bool     mergeBodies(Var bodyId, Var rootId);
+	bool     allowMerge(PrgBodyNode* body, PrgBodyNode* root, uint32 rootId);
+	bool     mergeBodies(PrgBodyNode* body, Var bodyRoot);
 	bool     reclassify(PrgAtomNode* a, uint32 atomId, uint32 diffLits);
 	bool     newFactBody(PrgBodyNode* b, uint32 id, uint32 oldHash);
 	void     newFalseBody(PrgBodyNode* b, uint32 oldHash);

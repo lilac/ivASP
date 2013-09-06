@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2011, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -20,8 +20,7 @@
 
 #include <clasp/model_enumerators.h>
 #include <clasp/solver.h>
-#include <clasp/minimize_constraint.h>
-#include <clasp/util/multi_queue.h>
+#include <clasp/smodels_constraints.h>
 #include <algorithm>
 namespace Clasp {
 
@@ -37,38 +36,28 @@ ModelEnumerator::~ModelEnumerator() {
 void ModelEnumerator::setEnableProjection(bool b) {
 	delete project_;
 	if (b) project_ = new VarVec();
-	else   project_ = 0;
 }
 
-void ModelEnumerator::initContext(SharedContext& ctx) {
-	assert(ctx.master());
-	if (project_) {
-		const SymbolTable& index = ctx.symTab();
-		if (index.type() == SymbolTable::map_indirect) {
-			for (SymbolTable::const_iterator it = index.curBegin(); it != index.end(); ++it) {
-				if (!it->second.name.empty() && it->second.name[0] != '_') {
-					addProjectVar(ctx, it->second.lit.var());
+void ModelEnumerator::doInit(Solver& s) {
+	if (project_ && s.strategies().symTab.get()) {
+		AtomIndex& index = *s.strategies().symTab;
+		for (AtomIndex::const_iterator it = index.curBegin(); it != index.end(); ++it) {
+			if (!it->second.name.empty()) {
+				Var v = it->second.lit.var();
+				s.setFrozen(v, true);
+				if (it->second.name[0] != '_' && s.value(v) == value_free) {
+					project_->push_back(v);
+					s.setProject(v, true);
 				}
 			}
-			std::sort(project_->begin(), project_->end());
-			project_->erase(std::unique(project_->begin(), project_->end()), project_->end());
 		}
-		else {
-			for (Var v = 1; v < index.size(); ++v) { addProjectVar(ctx, v); }
-		}
+		std::sort(project_->begin(), project_->end());
+		project_->erase(std::unique(project_->begin(), project_->end()), project_->end());
 		if (project_->empty()) { 
 			// We project to the empty set. Add true-var so that 
 			// we can distinguish this case from unprojected search
 			project_->push_back(0);
 		}
-	}
-}
-
-void ModelEnumerator::addProjectVar(SharedContext& ctx, Var v) {
-	if (ctx.master()->value(v) == value_free) {
-		project_->push_back(v);
-		ctx.setFrozen(v, true);
-		ctx.setProject(v, true);
 	}
 }
 
@@ -95,15 +84,16 @@ BacktrackEnumerator::BacktrackEnumerator(uint32 opts, Report* p)
 	, projectOpts_((uint8)std::min(uint32(7), opts)) {
 }
 
+BacktrackEnumerator::~BacktrackEnumerator() {
+	assert(nogoods_.empty() && "Enumerator::endSearch() not called!");
+}
 
-Enumerator::EnumeratorConstraint* BacktrackEnumerator::doInit(SharedContext& ctx, uint32 t, bool start) {
-	if (start) {
-		ModelEnumerator::initContext(ctx);
+void BacktrackEnumerator::terminateSearch(Solver& s) {
+	while (!nogoods_.empty()) {
+		static_cast<Clause*>(nogoods_.back().first)->removeWatches(s);
+		nogoods_.back().first->destroy();
+		nogoods_.pop_back();
 	}
-	else if (projectionEnabled() || t > 1) {
-		return new LocalConstraint();
-	}
-	return 0;
 }
 
 uint32 BacktrackEnumerator::getProjectLevel(Solver& s) {
@@ -116,21 +106,29 @@ uint32 BacktrackEnumerator::getProjectLevel(Solver& s) {
 	return maxL;
 }
 
+void BacktrackEnumerator::undoLevel(Solver& s) {
+	while (!nogoods_.empty() && nogoods_.back().second >= s.decisionLevel()) {
+		Clause* c = (Clause*)nogoods_.back().first;
+		nogoods_.pop_back();
+		*c->end() = posLit(0);
+		c->removeWatches(s);
+		c->destroy();
+	}
+}
+
 uint32 BacktrackEnumerator::getHighestBacktrackLevel(const Solver& s, uint32 bl) const {
 	if (!projectionEnabled() || (projectOpts_ & MINIMIZE_BACKJUMPING) == 0) {
 		return s.backtrackLevel();
 	}
 	uint32 res = s.backtrackLevel();
 	for (uint32 r = res+1; r <= bl; ++r) {
-		if (!s.sharedContext()->project(s.decision(r).var())) {
+		if (!s.project(s.decision(r).var())) {
 			return res;
 		}
 		++res;
 	}
 	return res;
 }
-
-bool BacktrackEnumerator::updateModel(Solver&) {  return projectionEnabled() || enumerated == 0; }
 
 bool BacktrackEnumerator::doBacktrack(Solver& s, uint32 bl) {
 	// bl is the decision level on which search should proceed.
@@ -145,14 +143,17 @@ bool BacktrackEnumerator::doBacktrack(Solver& s, uint32 bl) {
 	if (!projectionEnabled() || bl <= btLevel) {
 		// If we do not project or one of the projection vars is already on the backtracking level
 		// proceed with simple backtracking.
-		s.setBacktrackLevel(bl);
-		s.undoUntil(bl);
-		return s.backtrack();
+		while (!s.backtrack() || s.decisionLevel() >= bl) {
+			if (s.decisionLevel() == s.rootLevel()) {
+				return false;
+			}
+		}
+		return true;
 	}
 	else if (numProjectionVars() == 1u) {
 		Literal x = s.trueLit(projectVar(0));
 		s.undoUntil(0);
-		s.addUnary(~x, Constraint_t::static_constraint); // force the complement of x
+		s.force(~x, 0); // force the complement of x
 		s.setBacktrackLevel(s.decisionLevel());
 	}
 	else {
@@ -173,32 +174,26 @@ bool BacktrackEnumerator::doBacktrack(Solver& s, uint32 bl) {
 			if (s.level(x.var()) > btLevel) {
 				projAssign_[front++] = x;
 			}
-			else if (s.level(x.var()) != 0) {
-				projAssign_[--back] = x;
-			}
 			else {
-				projAssign_[--back] = projAssign_.back();
-				projAssign_.pop_back();
+				projAssign_[--back] = x;
 			}
 		}
 		s.undoUntil( btLevel );
 		Literal x = projAssign_[0];
 		LearntConstraint* c;
-		ClauseInfo e(Constraint_t::learnt_conflict);
 		if (front == 1) {
 			// The projection nogood is unit. Force the single remaining literal
 			// from the current DL. 
 			++back; // so that the active part of the nogood contains at least two literals
-			c = Clause::newContractedClause(s, projAssign_, e, back, false);
+			c = Clause::newContractedClause(s, projAssign_, back-1, back);
 			s.force(x, c);
 		}
 		else {
 			// Shorten the projection nogood by assuming one of its literals...
 			if ( (projectOpts_ & ENABLE_HEURISTIC_SELECT) != 0 ) {
-				x = s.heuristic()->selectRange(s, &projAssign_[0], &projAssign_[0]+back);
+				x = s.strategies().heuristic->selectRange(s, &projAssign_[0], &projAssign_[0]+back);
 			}
-			assert(s.value(projAssign_[1].var()) == value_free);
-			c = Clause::newContractedClause(s, projAssign_, e, back, false);
+			c = Clause::newContractedClause(s, projAssign_, back-1, back);
 			// to false.
 			s.assume(~x);
 		}
@@ -207,170 +202,34 @@ bool BacktrackEnumerator::doBacktrack(Solver& s, uint32 bl) {
 			// level in order to guarantee a different projected solution.
 			s.setBacktrackLevel(s.decisionLevel());
 		}
-		static_cast<LocalConstraint*>(s.getEnumerationConstraint())->add(s, c);
+		if (s.decisionLevel() != 0) {
+			// Attach nogood to the current decision literal. 
+			// Once the solver goes above that level, the nogood (which is then satisfied) is destroyed.
+			s.addUndoWatch(s.decisionLevel(), this);
+		}
+		nogoods_.push_back( NogoodPair(c, s.decisionLevel()) );
 		assert(s.backtrackLevel() == s.decisionLevel());
 	}
 	return true;
-}
-
-bool BacktrackEnumerator::updateConstraint(Solver& s, bool disjoint) {
-	if (disjoint) return true;
-	s.setStopConflict();
-	return false;
-}
-/////////////////////////////////////////////////////////////////////////////////////////
-// class BacktrackEnumerator::LocalConstraint
-/////////////////////////////////////////////////////////////////////////////////////////
-void BacktrackEnumerator::LocalConstraint::destroy(Solver* s, bool detach) {
-	while (!nogoods.empty()) {
-		Constraint* c = nogoods.back().first;
-		nogoods.pop_back();
-		c->destroy(s, detach);
-	}
-	EnumeratorConstraint::destroy(s, detach);
-}
-void BacktrackEnumerator::LocalConstraint::add(Solver& s, LearntConstraint* c) {
-	if (s.decisionLevel() != 0) {
-		// Attach nogood to the current decision literal. 
-		// Once the solver goes above that level, the nogood (which is then satisfied) is destroyed.
-		s.addUndoWatch(s.decisionLevel(), this);
-	}
-	nogoods.push_back( NogoodPair(c, s.decisionLevel()) );
-}
-void BacktrackEnumerator::LocalConstraint::undoLevel(Solver& s) {
-	while (!nogoods.empty() && nogoods.back().second >= s.decisionLevel()) {
-		Constraint* c = nogoods.back().first;
-		nogoods.pop_back();
-		c->destroy(&s, true);
-	}
-}
-
-Constraint* BacktrackEnumerator::LocalConstraint::cloneAttach(Solver& other) {
-	LocalConstraint* ret = new LocalConstraint();
-	ret->attach(other);
-	return ret;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
-// class RecordEnumerator::SolutionQueue
-/////////////////////////////////////////////////////////////////////////////////////////
-class RecordEnumerator::SolutionQueue : public mt::MultiQueue<SL*, void (*)(SL*)> {
-public:
-	typedef mt::MultiQueue<SL*, void (*)(SL*)> base_type;
-	SolutionQueue(uint32 m) : base_type(m, releaseLits) {}
-	void addSolution(SL* solution, ThreadId& id);
-	static void releaseLits(SL* x);
-};
-void RecordEnumerator::SolutionQueue::addSolution(SL* solution, ThreadId& id) {
-	assert(hasItems(id) == false);
-	Node* n = allocate(maxQ()-1, solution);
-	publishRelaxed(n);
-	id      = n;
-}
-void RecordEnumerator::SolutionQueue::releaseLits(SL* x) {  
-	x->release(); 
-}
-/////////////////////////////////////////////////////////////////////////////////////////
-// class RecordEnumerator::RecordConstraint
-/////////////////////////////////////////////////////////////////////////////////////////
-class RecordEnumerator::LocalConstraint : public EnumeratorConstraint {
-public:
-	typedef SolutionQueue::ThreadId ThreadId;
-	typedef ClauseCreator::Result   Result;
-	LocalConstraint(SolutionQueue* q);
-	bool   simplify(Solver& s, bool);
-	void   destroy(Solver* s, bool detach);
-	bool   add(Solver& s, LitVec& lits, const ClauseInfo& e);
-	bool   integrateAll(Solver& s);
-	Result integrate(Solver& s, SharedLiterals* lits, uint32 flags);
-	uint32 flags() const {
-		return ClauseCreator::clause_no_add
-			| ClauseCreator::clause_no_release
-			| ClauseCreator::clause_explicit;
-	}
-	Constraint* cloneAttach(Solver& other);
-	PodVector<Constraint*>::type db;
-	SolutionQueue* queue;
-	ThreadId       id;
-};
-RecordEnumerator::LocalConstraint::LocalConstraint(SolutionQueue* q) : queue(q), id(0) {
-	if (queue) { id = queue->addThread(); }
-}
-bool RecordEnumerator::LocalConstraint::simplify(Solver& s, bool) {
-	s.simplifyDB(db);
-	return false;
-}
-void RecordEnumerator::LocalConstraint::destroy(Solver* s, bool detach) {
-	while (!db.empty()) {
-		db.back()->destroy(s, detach);
-		db.pop_back();
-	}
-	EnumeratorConstraint::destroy(s, detach);
-}
-
-Constraint* RecordEnumerator::LocalConstraint::cloneAttach(Solver& other) {
-	LocalConstraint* ret = new LocalConstraint(queue);
-	ret->attach(other);
-	return ret;
-}
-
-bool RecordEnumerator::LocalConstraint::add(Solver& s, LitVec& lits, const ClauseInfo& e) {
-	ClauseCreator::Result ret;
-	if (!queue) {
-		ret = ClauseCreator::create(s, lits, ClauseCreator::clause_no_add|ClauseCreator::clause_known_order, e);
-		if (ret.local) { db.push_back(ret.local); }
-	}
-	else {
-		// parallel solving active - share solution literals
-		// with other solvers
-		SL* shared = SL::newShareable(lits, e.type());
-		queue->addSolution(shared, id);
-		// and add local representation to solver
-		ret = integrate(s, shared, flags()|ClauseCreator::clause_known_order);
-	}
-	return ret.ok() || s.resolveConflict();
-}
-
-bool RecordEnumerator::LocalConstraint::integrateAll(Solver& s) {
-	if (queue) {
-		uint32 f = flags();
-		for (SL* clause; queue->tryConsume(id, clause); ) {
-			if (!integrate(s, clause, f)) return false;
-		}
-	}
-	return true;
-}
-
-ClauseCreator::Result RecordEnumerator::LocalConstraint::integrate(Solver& s, SL* clause, uint32 f) {
-	ClauseCreator::Result res = ClauseCreator::integrate(s, clause, f);
-	if (res.local) { db.push_back(res.local); }
-	return res;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // class RecordEnumerator
 /////////////////////////////////////////////////////////////////////////////////////////
 RecordEnumerator::RecordEnumerator(Report* p)
-	: ModelEnumerator(p)
-	, queue_(0) {
+	: ModelEnumerator(p) {
 }
 
 RecordEnumerator::~RecordEnumerator() {
-	delete queue_;
+	assert(nogoods_.empty() && "Enumerator::endSearch() not called!");
 }
 
-Enumerator::EnumeratorConstraint* RecordEnumerator::doInit(SharedContext& ctx, uint32 t, bool start) {
-	if (start) {
-		ModelEnumerator::initContext(ctx);
-		return 0;
+void RecordEnumerator::terminateSearch(Solver& s) {
+	while (!nogoods_.empty()) {
+		static_cast<LearntConstraint*>(nogoods_.back())->removeWatches(s);
+		nogoods_.back()->destroy();
+		nogoods_.pop_back();
 	}
-	delete queue_;
-	queue_ = 0;
-	if (t > 1 && (!optimize() || projectionEnabled())) {
-		queue_ = new SolutionQueue(t); 
-		queue_->reserve(t);
-	}
-	return new LocalConstraint(queue_);
 }
 
 uint32 RecordEnumerator::getProjectLevel(Solver& s) {
@@ -389,36 +248,71 @@ uint32 RecordEnumerator::assertionLevel(const Solver& s) {
 	return solution_.implicationLevel();
 }
 
-void RecordEnumerator::createSolutionNogood(Solver& s) {
+void RecordEnumerator::addSolution(Solver& s) {
 	solution_.clear(); solution_.setSolver(s);
-	if (optimize()) return;
+	if (minimize() && minimize()->mode() == MinimizeConstraint::compare_less) return;
 	solution_.start(Constraint_t::learnt_conflict);
 	for (uint32 x = s.decisionLevel(); x != 0; --x) {
 		solution_.add(~s.decision(x));
 	}
+	if (minimize() && minimize()->models() == 1) {
+		ConstraintDB::size_type i, end, j = 0;
+		for (i = 0, end = nogoods_.size(); i != end; ++i) {
+			Clause* c = (Clause*)nogoods_[i];
+			if (c->locked(s)) {
+				nogoods_[j++] = c;
+			}
+			else {
+				c->removeWatches(s);
+				c->destroy();
+			}
+		}
+		nogoods_.erase(nogoods_.begin()+j, nogoods_.end());
+	}
+}
+
+bool RecordEnumerator::simplify(Solver& s, bool r) {
+	ConstraintDB::size_type i, j, end = nogoods_.size();
+	for (i = j = 0; i != end; ++i) {
+		Constraint* c = nogoods_[i];
+		if (c->simplify(s, r))  { c->destroy(); }
+		else                    { nogoods_[j++] = c;  }
+	}
+	nogoods_.erase(nogoods_.begin()+j, nogoods_.end());
+	return false;
 }
 
 bool RecordEnumerator::doBacktrack(Solver& s, uint32 bl) {
 	assert(bl >= s.rootLevel());
 	if (!projectionEnabled()) {
-		createSolutionNogood(s);
+		addSolution(s);
 	}
 	bl = std::min(bl, assertionLevel(s));
-	s.undoUntil(bl, true);
+	if (s.backtrackLevel() > 0) {
+		// must clear backtracking level;
+		// not needed to guarantee redundancy-freeness
+		// and may inadvertently bound undoUntil()
+		s.setBacktrackLevel(0);
+	}
+	s.undoUntil(bl);
 	if (solution_.empty()) {
-		assert(optimize());
+		assert(minimize() && minimize()->mode() == MinimizeConstraint::compare_less);
 		return true;
 	}
-	LocalConstraint* c  = static_cast<LocalConstraint*>(s.getEnumerationConstraint());
-	return c->add(s, solution_.lits(), ClauseInfo(Constraint_t::learnt_other));
-}
-
-bool RecordEnumerator::updateModel(Solver&) { 
-	return queue_ != 0;
-}
-bool RecordEnumerator::updateConstraint(Solver& s, bool) {
-	LocalConstraint* con = static_cast<LocalConstraint*>(s.getEnumerationConstraint());
-	return con->integrateAll(s);
+	bool r = true;
+	if (solution_.size() < 4) {
+		r = solution_.end();
+	}
+	else {
+		Literal x;
+		if (s.isFalse(solution_[solution_.sw()])) {
+			x = solution_[0];
+		}
+		LearntConstraint* c = Clause::newLearntClause(s, solution_.lits(), Constraint_t::learnt_conflict, solution_.sw());
+		nogoods_.push_back((Clause*)c);
+		r = s.force(x, c);
+	}
+	return r || s.resolveConflict();
 }
 
 }

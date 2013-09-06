@@ -1,5 +1,5 @@
 // 
-// Copyright (c) 2006-2010, Benjamin Kaufmann
+// Copyright (c) 2006-2007, Benjamin Kaufmann
 // 
 // This file is part of Clasp. See http://www.cs.uni-potsdam.de/clasp/ 
 // 
@@ -19,14 +19,20 @@
 //
 #include <clasp/heuristics.h>
 #include <algorithm>
-#include <limits>
-namespace Clasp {
+namespace Clasp { namespace {
+
+// our own rng for heuristics
+uint32 heuRand_g = 1;
+inline uint32 heuRand() {
+	return( ((heuRand_g = heuRand_g * 214013L + 2531011L) >> 16) & 0x7fff );
+}
+}
 /////////////////////////////////////////////////////////////////////////////////////////
 // Lookback selection strategies
 /////////////////////////////////////////////////////////////////////////////////////////
 uint32 momsScore(const Solver& s, Var v) {
 	uint32 sc;
-	if (s.sharedContext()->numBinary()) {
+	if (s.numBinaryConstraints()) {
 		uint32 s1 = s.estimateBCP(posLit(v), 0) - 1;
 		uint32 s2 = s.estimateBCP(negLit(v), 0) - 1;
 		sc = ((s1 * s2)<<10) + (s1 + s2);
@@ -49,10 +55,10 @@ uint32 momsScore(const Solver& s, Var v) {
 #define BERK_MAX_MOMS_DECS 50
 #define BERK_MAX_DECAY 65534
 
-ClaspBerkmin::ClaspBerkmin(uint32 maxB) 
-	: order_(false)
+ClaspBerkmin::ClaspBerkmin(uint32 maxB, bool loops, bool moms, bool huang) 
+	: order_(huang, moms, loops)
 	, topConflict_(UINT32_MAX)
-	, topOther_(UINT32_MAX)
+	, topLoop_(UINT32_MAX)
 	, front_(1) 
 	, cacheSize_(5)
 	, numVsids_(0)
@@ -116,15 +122,11 @@ Var ClaspBerkmin::getTopMoms(const Solver& s) {
 }
 
 void ClaspBerkmin::Order::init(const Solver& s) {
-	if (s.strategies().heuReinit) { score.clear(); }
+	if (reinit) { score.clear(); }
 	score.resize(s.numVars()+1);
 }
 
 void ClaspBerkmin::startInit(const Solver& s) {
-	if (order_.score.empty()) {
-		order_.huang = s.strategies().berkHuang != 0;
-		rng_.srand(s.strategies().rng.seed());
-	}
 	order_.init(s);
 	initHuang(order_.huang);
 
@@ -133,8 +135,8 @@ void ClaspBerkmin::startInit(const Solver& s) {
 	cacheFront_ = cache_.end();
 	
 	freeLits_.clear();
-	freeOtherLits_.clear();
-	topConflict_ = topOther_ = (uint32)-1;
+	freeLoopLits_.clear();
+	topConflict_ = topLoop_ = (uint32)-1;
 	
 	front_ = 1;
 	order_.decay = numVsids_ = 0;
@@ -142,7 +144,7 @@ void ClaspBerkmin::startInit(const Solver& s) {
 
 void ClaspBerkmin::endInit(Solver& s) {
 	if (initHuang()) {
-		const bool clearScore = s.strategies().heuMoms != 0;
+		const bool clearScore = order_.moms;
 		// initialize preferred values of vars
 		cache_.clear();
 		for (Var v = 1; v <= s.numVars(); ++v) {
@@ -155,7 +157,7 @@ void ClaspBerkmin::endInit(Solver& s) {
 		}
 		initHuang(false);
 	}
-	if (s.strategies().heuMoms == 0 || s.numFreeVars() > BERK_MAX_MOMS_VARS) {
+	if (!order_.moms || s.numFreeVars() > BERK_MAX_MOMS_VARS) {
 		hasActivities(true);
 	}
 	std::stable_sort(cache_.begin(), cache_.end(), Order::Compare(&order_));
@@ -163,36 +165,23 @@ void ClaspBerkmin::endInit(Solver& s) {
 }
 
 void ClaspBerkmin::newConstraint(const Solver&, const Literal* first, LitVec::size_type size, ConstraintType t) {
+	if (order_.huang == (t == Constraint_t::static_constraint)) {
+		for (; size--; ++first) { order_.incOcc(*first); }
+	}
 	if (t == Constraint_t::learnt_conflict) {
 		hasActivities(true);
 	}
-	if (order_.huang == (t == Constraint_t::static_constraint)) {
-		for (const Literal* x = first, *end = first+size; x != end; ++x) {
-			order_.incOcc(*x);
-		}
-	}
 }
 
-void ClaspBerkmin::updateReason(const Solver& s, const LitVec& lits, Literal r) {
-	const bool ms = s.strategies().berkOnce == 0;
+void ClaspBerkmin::updateReason(const Solver&, const LitVec& lits, Literal r) {
 	for (LitVec::size_type i = 0, e = lits.size(); i != e; ++i) {
-		if (ms || !s.seen(lits[i])) {
-			order_.inc(~lits[i]);
-		}
+		order_.inc(~lits[i]);
 	}
 	if (!isSentinel(r)) { order_.inc(r); }
 }
 
-bool ClaspBerkmin::bump(const Solver&, const WeightLitVec& lits, double adj) {
-	for (WeightLitVec::const_iterator it = lits.begin(), end = lits.end(); it != end; ++it) {
-		uint32 xf = order_.decayedScore(it->first.var()) + static_cast<weight_t>(it->second*adj);
-		order_.score[it->first.var()].act = (uint16)std::min(xf, UINT32_MAX>>16);
-	}
-	return true;
-}
-
 void ClaspBerkmin::undoUntil(const Solver&, LitVec::size_type) {
-	topConflict_ = topOther_ = static_cast<uint32>(-1);
+	topConflict_ = topLoop_ = static_cast<uint32>(-1);
 	front_ = 1;
 	cache_.clear();
 	cacheFront_ = cache_.end();
@@ -202,48 +191,50 @@ void ClaspBerkmin::undoUntil(const Solver&, LitVec::size_type) {
 	numVsids_ = 0;
 }
 
+bool ClaspBerkmin::hasTopUnsat(Solver& s, uint32& maxIdx, uint32 minIdx, ConstraintType t) {
+	while (maxIdx != minIdx) {
+		const LearntConstraint& c = s.getLearnt(maxIdx-1);
+		if (c.type() == t && !c.isSatisfied(s, freeLits_)) {
+			return true;
+		}
+		--maxIdx;
+		freeLits_.clear();
+	}
+	return false;
+}
+
 bool ClaspBerkmin::hasTopUnsat(Solver& s) {
 	topConflict_  = std::min(s.numLearntConstraints(), topConflict_);
-	topOther_     = std::min(s.numLearntConstraints(), topOther_);
-	assert(topConflict_ <= topOther_);
-	freeOtherLits_.clear();
+	topLoop_      = std::min(s.numLearntConstraints(), topLoop_);
+	freeLoopLits_.clear();
 	freeLits_.clear();
-	TypeSet ts;
-	if (s.strategies().heuOther != 0) {
-		ts.addSet(Constraint_t::learnt_loop);
-		if (s.strategies().heuOther == 2) { ts.addSet(Constraint_t::learnt_other); }
-		while (topOther_ > topConflict_) {
-			if (s.getLearnt(topOther_-1).isOpen(s, ts, freeLits_) != 0) {
-				freeLits_.swap(freeOtherLits_);
-				ts.m = 0;
-				break;
-			}
-			--topOther_;
-			freeLits_.clear();
-		}
+	if (topConflict_ > topLoop_ && hasTopUnsat(s, topConflict_, topLoop_, Constraint_t::learnt_conflict)) {
+		return true;
 	}
-	ts.addSet(Constraint_t::learnt_conflict);
+	if (order_.loops && topLoop_ > topConflict_ && hasTopUnsat(s, topLoop_, topConflict_, Constraint_t::learnt_loop)) {
+		freeLits_.swap(freeLoopLits_);
+	}
 	uint32 stopAt = topConflict_ < maxBerkmin_ ? 0 : topConflict_ - maxBerkmin_;
 	while (topConflict_ != stopAt) {
-		uint32 x = s.getLearnt(topConflict_-1).isOpen(s, ts, freeLits_);
-		if (x != 0) {
-			if (x == Constraint_t::learnt_conflict) { break; }
-			topOther_  = topConflict_;
-			freeLits_.swap(freeOtherLits_);
-			ts.m = 0;
-			ts.addSet(Constraint_t::learnt_conflict);
+		const LearntConstraint& c = s.getLearnt(topConflict_-1);
+		if (c.type() == Constraint_t::learnt_conflict && !c.isSatisfied(s, freeLits_)) {
+			break;
+		}
+		else if (order_.loops && freeLoopLits_.empty() && c.type() == Constraint_t::learnt_loop && !c.isSatisfied(s, freeLits_)) {
+			topLoop_  = topConflict_;
+			freeLits_.swap(freeLoopLits_);
 		}
 		--topConflict_;
 		freeLits_.clear();
 	}
-	if (freeOtherLits_.empty())  topOther_ = topConflict_;
-	if (freeLits_.empty())      freeOtherLits_.swap(freeLits_);
+	if (freeLoopLits_.empty())  topLoop_ = topConflict_;
+	if (freeLits_.empty())      freeLoopLits_.swap(freeLits_);
 	return !freeLits_.empty();
 }
 
 Literal ClaspBerkmin::doSelect(Solver& s) {
 	const uint32 decayMask = order_.huang ? 127 : 511;
-	if ( ((s.stats.choices + 1)&decayMask) == 0 ) {
+	if ( ((s.stats.solve.choices + 1)&decayMask) == 0 ) {
 		if ((order_.decay += (1+!order_.huang)) == BERK_MAX_DECAY) {
 			order_.resetDecay();
 		}
@@ -288,30 +279,27 @@ Literal ClaspBerkmin::selectRange(Solver& s, const Literal* first, const Literal
 			}
 		}
 	}
-	return c == 1 ? candidates[0] : candidates[rng_.irand(c)];
+	return c == 1 ? candidates[0] : candidates[heuRand()%c];
 }
 
-Literal ClaspBerkmin::selectLiteral(Solver& s, Var v, bool vsids) const {
-	ValueRep pv = s.prefValue(v);
-	ValueRep sv = s.savedValue(v);
-	if (sv == 0 && pv == 0) {
-		int32 w0 = vsids ? (int32)s.estimateBCP(posLit(v), 5) : order_.occ(v);
-		int32 w1 = vsids ? (int32)s.estimateBCP(negLit(v), 5) : 0;
+Literal ClaspBerkmin::selectLiteral(Solver& s, Var var, bool vsids) {
+	Literal l;
+	if ( (l = savedLiteral(s,var)) == posLit(0) ) {
+		int32 w0 = vsids ? (int32)s.estimateBCP(posLit(var), 5) : order_.occ(var);
+		int32 w1 = vsids ? (int32)s.estimateBCP(negLit(var), 5) : 0;
 		if (w1 == 1 && w0 == w1) {
 			// no binary bcp - use occurrences
-			w0 = order_.occ(v);
+			w0 = order_.occ(var);
 			w1 = 0;
 		}
-		return w0 != w1 ? Literal(v, (w0-w1)<0) : s.defaultLiteral(v);
+		return w0 != w1 
+			? Literal(var, (w0-w1)<0)
+			: s.preferredLiteralByType(var);
 	}
-	else if (pv == 0) { 
-		Literal x(v, valSign(sv));
-		if (order_.huang && (order_.occ(v)*(-1+(2*x.sign()))) > 32) {
-			x = ~x;
-		}
-		return x;
+	else if (order_.huang && (order_.occ(var)*(-1+(2*l.sign()))) > 32) {
+		l = ~l;
 	}
-	else { return Literal(v, valSign(pv)); }
+	return l;
 }
 
 void ClaspBerkmin::Order::resetDecay() {
@@ -324,20 +312,20 @@ void ClaspBerkmin::Order::resetDecay() {
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClaspVmtf selection strategy
 /////////////////////////////////////////////////////////////////////////////////////////
-ClaspVmtf::ClaspVmtf(LitVec::size_type mtf) : MOVE_TO_FRONT(mtf >= 2 ? mtf : 2) { 
+ClaspVmtf::ClaspVmtf(LitVec::size_type mtf, bool loops) : MOVE_TO_FRONT(mtf), loops_(loops), reinit_(true) { 
 }
 
 
 void ClaspVmtf::startInit(const Solver& s) {
-	if (s.strategies().heuReinit) { score_.clear(); vars_.clear(); }
+	if (reinit_) { score_.clear(); vars_.clear(); }
 	score_.resize(s.numVars()+1, VarInfo(vars_.end()));
 }
 
 void ClaspVmtf::endInit(Solver& s) {
-	if (s.strategies().heuReinit)     { vars_.clear(); }
-	bool moms = s.strategies().heuMoms != 0;
+	if (reinit_) vars_.clear();
+	bool moms = reinit_ || score_[0].activity_ == 0;
 	for (Var v = 1; v <= s.numVars(); ++v) {
-		if (s.value(v) == value_free && score_[v].pos_ == vars_.end()) {
+		if (score_[v].pos_ == vars_.end() && s.finalValue(v) == value_free) {
 			if (moms) {
 				score_[v].activity_ = momsScore(s, v);
 			}
@@ -356,9 +344,9 @@ void ClaspVmtf::endInit(Solver& s) {
 
 void ClaspVmtf::simplify(const Solver& s, LitVec::size_type i) {
 	for (; i < s.numAssignedVars(); ++i) {
-		if (score_[s.trail()[i].var()].pos_ != vars_.end()) {
-			vars_.erase(score_[s.trail()[i].var()].pos_);
-			score_[s.trail()[i].var()].pos_ = vars_.end();
+		if (score_[s.assignment()[i].var()].pos_ != vars_.end()) {
+			vars_.erase(score_[s.assignment()[i].var()].pos_);
+			score_[s.assignment()[i].var()].pos_ = vars_.end();
 		}
 	}
 	front_ = vars_.begin();
@@ -368,12 +356,10 @@ void ClaspVmtf::newConstraint(const Solver& s, const Literal* first, LitVec::siz
 	if (t != Constraint_t::static_constraint) {
 		LessLevel comp(s, score_);
 		VarVec::size_type maxMove = t == Constraint_t::learnt_conflict ? MOVE_TO_FRONT : MOVE_TO_FRONT/2;
-		const bool upAct = (t == Constraint_t::learnt_conflict)
-		                || (((s.strategies().heuOther + 1) & 3u) > uint32(t-1));
 		for (LitVec::size_type i = 0; i < size; ++i, ++first) {
 			Var v = first->var(); 
 			score_[v].occ_ += 1 - (((int)first->sign())<<1);
-			if (upAct) {
+			if (t == Constraint_t::learnt_conflict || loops_) {
 				++score_[v].activity(decay_);
 				if (mtf_.size() < maxMove) {
 					mtf_.push_back(v);
@@ -398,6 +384,16 @@ void ClaspVmtf::newConstraint(const Solver& s, const Literal* first, LitVec::siz
 	} 
 }
 
+Literal ClaspVmtf::getLiteral(const Solver& s, Var v) const {
+	Literal r;
+	if ( (r = savedLiteral(s, v)) == posLit(0) ) {
+		r = score_[v].occ_== 0
+			? s.preferredLiteralByType(v)
+			: Literal(v, score_[v].occ_ < 0 );
+	}
+	return r;
+}
+
 void ClaspVmtf::undoUntil(const Solver&, LitVec::size_type) {
 	front_ = vars_.begin();
 }
@@ -406,15 +402,8 @@ void ClaspVmtf::updateReason(const Solver&, const LitVec&, Literal r) {
 	++score_[r.var()].activity(decay_);
 }
 
-bool ClaspVmtf::bump(const Solver&, const WeightLitVec& lits, double adj) {
-	for (WeightLitVec::const_iterator it = lits.begin(), end = lits.end(); it != end; ++it) {
-		score_[it->first.var()].activity(decay_) += static_cast<uint32>(it->second*adj);
-	}
-	return true;
-}
-
 Literal ClaspVmtf::doSelect(Solver& s) {
-	decay_ += ((s.stats.choices + 1) & 511) == 0;
+	decay_ += ((s.stats.solve.choices + 1) & 511) == 0;
 	for (; s.value(*front_) != value_free; ++front_) {;}
 	Literal c;
 	if (s.numFreeVars() > 1) {
@@ -425,11 +414,11 @@ Literal ClaspVmtf::doSelect(Solver& s) {
 			++distance;
 		} while (s.value(*v2) != value_free);
 		c = (score_[*front_].activity(decay_) + (distance<<1)+ 3) > score_[*v2].activity(decay_)
-		    ? selectLiteral(s, *front_, score_[*front_].occ_)
-		    : selectLiteral(s, *v2, score_[*v2].occ_);
+				? getLiteral(s, *front_)
+				: getLiteral(s, *v2);
 	}
 	else {
-		c = selectLiteral(s, *front_, score_[*front_].occ_);
+		c = getLiteral(s, *front_);
 	}
 	return c;
 }
@@ -447,23 +436,25 @@ Literal ClaspVmtf::selectRange(Solver&, const Literal* first, const Literal* las
 /////////////////////////////////////////////////////////////////////////////////////////
 // ClaspVsids selection strategy
 /////////////////////////////////////////////////////////////////////////////////////////
-ClaspVsids::ClaspVsids(double decay) 
+const double vsidsVarDecay_g = 1 / 0.95;
+
+ClaspVsids::ClaspVsids(bool loops) 
 	: vars_(GreaterActivity(score_)) 
-	, decay_(1.0 / std::max(0.01, std::min(1.0, decay)))
-	, inc_(1.0) {}
+	, inc_(1.0)
+	, scoreLoops_(loops) 
+	, reinit_(true) {}
 
 void ClaspVsids::startInit(const Solver& s) {
-	if (s.strategies().heuReinit) score_.clear();
+	if (reinit_)score_.clear();
 	score_.resize(s.numVars()+1);
 }
-
 void ClaspVsids::endInit(Solver& s) {
-	if (s.strategies().heuReinit)     { vars_.clear(); }
-	bool moms = s.strategies().heuMoms != 0;
+	if (reinit_) vars_.clear();
+	bool moms = vars_.empty();
 	inc_ = 1.0;
 	double maxS = 0.0;
 	for (Var v = 1; v <= s.numVars(); ++v) {
-		if (s.value(v) == value_free && !vars_.is_in_queue(v)) {
+		if (s.value(v) == value_free && (reinit_ || !vars_.is_in_queue(v))) {
 			if (moms) {
 				// initialize activity to moms-score
 				score_[v].first = momsScore(s, v);
@@ -483,38 +474,20 @@ void ClaspVsids::endInit(Solver& s) {
 
 void ClaspVsids::simplify(const Solver& s, LitVec::size_type i) {
 	for (; i < s.numAssignedVars(); ++i) {
-		vars_.remove(s.trail()[i].var());
+		vars_.remove(s.assignment()[i].var());
 	}
 }
 
-void ClaspVsids::normalize() {
-	const double min  = std::numeric_limits<double>::min();
-	const double minD = min * 1e100;
-	inc_             *= 1e-100;
-	for (LitVec::size_type i = 0; i != score_.size(); ++i) {
-		double d = score_[i].first;
-		if (d > 0) {
-			// keep relative ordering but 
-			// actively avoid denormals
-			d += minD;
-			d *= 1e-100;
-		}
-		score_[i].first = d;
-	}
-}
-
-void ClaspVsids::newConstraint(const Solver& s, const Literal* first, LitVec::size_type size, ConstraintType t) {
+void ClaspVsids::newConstraint(const Solver&, const Literal* first, LitVec::size_type size, ConstraintType t) {
 	if (t != Constraint_t::static_constraint) {
-		const bool upAct = (t == Constraint_t::learnt_conflict)
-		                || (((s.strategies().heuOther + 1) & 3u) > uint32(t-1));
 		for (LitVec::size_type i = 0; i < size; ++i, ++first) {
 			score_[first->var()].second += 1 - (first->sign() + first->sign());
-			if (upAct) {
+			if (t == Constraint_t::learnt_conflict || scoreLoops_) {
 				updateVarActivity(first->var());
 			}
 		}
 		if (t == Constraint_t::learnt_conflict) {
-			inc_ *= decay_;
+			inc_ *= vsidsVarDecay_g;
 		}
 	}
 }
@@ -523,15 +496,8 @@ void ClaspVsids::updateReason(const Solver&, const LitVec&, Literal r) {
 	if (r.var() != 0) updateVarActivity(r.var());
 }
 
-bool ClaspVsids::bump(const Solver&, const WeightLitVec& lits, double adj) {
-	for (WeightLitVec::const_iterator it = lits.begin(), end = lits.end(); it != end; ++it) {
-		updateVarActivity(it->first.var(), it->second*adj);
-	}
-	return true;
-}
-
 void ClaspVsids::undoUntil(const Solver& s , LitVec::size_type st) {
-	const LitVec& a = s.trail();
+	const LitVec& a = s.assignment();
 	for (; st < a.size(); ++st) {
 		if (!vars_.is_in_queue(a[st].var())) {
 			vars_.push(a[st].var());
@@ -540,10 +506,18 @@ void ClaspVsids::undoUntil(const Solver& s , LitVec::size_type st) {
 }
 
 Literal ClaspVsids::doSelect(Solver& s) {
+	Var var;
 	while ( s.value(vars_.top()) != value_free ) {
 		vars_.pop();
 	}
-	return selectLiteral(s, vars_.top(), score_[vars_.top()].second);
+	var = vars_.top();
+	Literal r;
+	if ( (r = savedLiteral(s, var)) == posLit(0) ) {
+		r = score_[var].second == 0
+			? s.preferredLiteralByType(var)
+			: Literal( var, score_[var].second < 0 );
+	}
+	return r;
 }
 
 Literal ClaspVsids::selectRange(Solver&, const Literal* first, const Literal* last) {

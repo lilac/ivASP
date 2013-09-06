@@ -27,36 +27,11 @@
 #include <algorithm>
 /*!
  * \file 
- * Some utility types and functions.
+ * Some utility types and functions not specific to clasp.
  */
 namespace Clasp {
-class Solver;
-struct PreprocessEvent {
-	PreprocessEvent(int t) : type(t) {}
-	int type;
-};
-struct SolveEvent      {
-	SolveEvent(const Solver& s, int t) : solver(&s), type(t) {}
-	const Solver* solver;
-	int           type;
-};
-
-//! Interface used by the library to report preprocessing and solving events.
-class ProgressReport {
-public:	
-	ProgressReport();
-	virtual ~ProgressReport();
-	//! Report preprocessing progress.
-	virtual void reportProgress(const PreprocessEvent& /* ev */) {}
-	//! Report solving progress.
-	virtual void reportProgress(const SolveEvent& /* ev */) {}
-private:
-	ProgressReport(const ProgressReport&);
-	ProgressReport& operator=(const ProgressReport&);
-};
-
 /*!
- * \defgroup misc Miscellaneous and Internal Stuff not specific to clasp.
+ * \defgroup misc Miscellaneous and Internal Stuff
  */
 //@{
 
@@ -83,50 +58,48 @@ inline uint64 choose(unsigned n, unsigned k) {
 	return res;
 }
 
-//! A very simple but fast Pseudo-random number generator
+
+extern uint32 randSeed_g; /**< stores the seed of the RNG */
+
+//! Sets the starting point for random-number generation.
 /*!
- * \note This class is a replacement for the standard rand-function. It is provided
- * in order to get reproducible random numbers among different compilers.
+ * The function sets the starting point for generating a series of pseudorandom integers. 
+ * To reinitialize the generator, use 1 as the seed argument. Any other value for seed 
+ * sets the generator to a random starting point. Calling rand() before any call to srand()
+ * generates the same sequence as calling srand() with seed passed as 1.
  */
-class RNG {
-public:
-	explicit RNG(uint32 seed = 1) : seed_(seed) {}
-	
-	//! Sets the starting point for random-number generation.
-	/*!
-	 * The function sets the starting point for generating a series of pseudorandom integers. 
-	 * To reinitialize the generator, use 1 as the seed argument. Any other value for seed 
-	 * sets the generator to a random starting point. Calling rand() before any call to srand()
-	 * generates the same sequence as calling srand() with seed passed as 1.
-	 */	
-	void srand(uint32 seed) { seed_ = seed; }
-	
-	//! Generates a pseudorandom number
-	/*!
-	 * The rand function returns a pseudorandom integer in the range 0 to 32767 
-	 * Use the srand function to seed the pseudorandom-number generator before calling rand.
-	 */
-	uint32 rand() {
-		return( ((seed_ = seed_ * 214013L + 2531011L) >> 16) & 0x7fff );
-	}
+inline void srand(uint32 seed) { randSeed_g = seed; }
 
-	//! random floating point number in the range [0, 1.0)
-	double drand() {
-		return this->rand()/static_cast<double>(0x8000u);
-	}
+//! Generates a pseudorandom number
+/*!
+ * The rand function returns a pseudorandom integer in the range 0 to 32767 
+ * Use the srand function to seed the pseudorandom-number generator before calling rand.
+ *
+ * \note This function is a replacement for the standard rand-function. It is provided
+ * in order to get reproducible random numbers among different compilers.
+ *
+ * \attention The rand() function is not thread-safe. Calls to rand() from different
+ * threads must be serialized.
+ */
+inline uint32 rand() {
+	return( ((randSeed_g = randSeed_g * 214013L + 2531011L) >> 16) & 0x7fff );
+}
 
-	//! random number in the range [0, max)
-	unsigned irand(unsigned max) {
-		return static_cast<unsigned>(drand() * max);
-	}
+//! random floating point number in the range [0, 1.0)
+/*!
+ * \attention Function is not thread-safe
+ */
+inline double drand() {
+	return Clasp::rand()/static_cast<double>(0x8000u);
+}
 
-	uint32 seed() const { return seed_; }
-
-	uint32 operator()(unsigned max) { return irand(max); }
-	uint32 operator()()             { return rand(); }
-private:
-	uint32 seed_;
-};
+//! random number in the range [0, max)
+/*!
+ * \attention Function is not thread-safe
+ */
+inline unsigned irand(unsigned max) {
+	return static_cast<unsigned>(drand() * max);
+}
 
 //! An unary operator function that calls p->destroy()
 struct DestroyObject {
@@ -262,7 +235,7 @@ struct compose_2_2 : public std::binary_function<
 														typename OP2::argument_type, 
 														typename OP3::argument_type,
 														typename OP1::result_type> {
-	compose_2_2(const OP1& op1 = OP1(), const OP2& op2 = OP2(), const OP3& op3 = OP3())
+	compose_2_2(const OP1& op1, const OP2& op2, const OP3& op3)
 		: op1_(op1)
 		, op2_(op2)
 		, op3_(op3) {}
@@ -285,24 +258,28 @@ inline compose_2_2<OP1, OP2,OP3> compose22(const OP1& op1, const OP2& op2, const
 	return compose_2_2<OP1, OP2, OP3>(op1, op2, op3);
 }
 
-
-template <class T, class D = DeleteObject>
+template <class T>
 class SingleOwnerPtr {
 public:
 	explicit SingleOwnerPtr(T* ptr) : ptr_( set_bit(uintp(ptr),0) ) {}
-	~SingleOwnerPtr()                 { *this = 0; }
-	bool is_owner()   const { return test_bit(ptr_, 0); }
-	T*   get()        const { return (T*)clear_bit(ptr_, 0); }
-	T&   operator*()  const { return *get(); }
-	T*   operator->() const { return  get(); }
+	~SingleOwnerPtr() {
+		if (is_owner()) { 
+			delete release();
+		}
+	}
 	SingleOwnerPtr& operator=(T* ptr) {
-		if (ptr != get() && is_owner()) { D deleter; deleter(release()); }
-		ptr_ = set_bit(uintp(ptr),0);
+		SingleOwnerPtr t(ptr);
+		t.swap(*this);
 		return *this;
 	}
-	void swap(SingleOwnerPtr& o) { std::swap(ptr_, o.ptr_); }
-	T*   release()               { store_clear_bit(ptr_, 0); return get();  }
-	T*   acquire()               { store_set_bit(ptr_, 0);   return get();  }
+	T& operator*()  const { return *get(); }
+	T* operator->() const { return  get(); }
+	T*    release()   { store_clear_bit(ptr_, 0); return get();  }
+	T*    get() const { return (T*)clear_bit(ptr_, 0); }
+	void swap(SingleOwnerPtr& o) {
+		std::swap(ptr_, o.ptr_);
+	}
+	bool is_owner() const { return test_bit(ptr_, 0); }
 private:
 	SingleOwnerPtr(const SingleOwnerPtr&);
 	SingleOwnerPtr& operator=(const SingleOwnerPtr&);
