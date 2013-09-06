@@ -765,8 +765,8 @@ void Rule::report(Output::OutputBase &out) {
         if (auto lit = x->toOutput()) { rule.body.emplace_back(*lit); }
     }
     if (volat) {
-        auto lit = std::make_unique<Output::AuxLiteral>(out.auxAtom, true);
-        rule.body.emplace_back(*lit);
+    	Output::AuxLiteral lit(out.auxAtom, false);
+        rule.body.emplace_back(std::ref(lit)); // NOTE: body: vector<std::reference_wrapper<Literal>>
     }
     if (defines) {
         auto ret(domain->insert(defines->repr->eval(), rule.body.empty()));
